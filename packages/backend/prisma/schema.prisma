@@ -1,0 +1,411 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum CallStatus {
+  RINGING
+  IN_PROGRESS
+  COMPLETED
+  NO_ANSWER
+  BUSY
+  FAILED
+  CANCELED
+}
+
+enum LeadType {
+  CALL
+  FORM
+}
+
+enum NotificationChannel {
+  EMAIL
+  SLACK
+  WEBHOOK
+}
+
+enum TranscriptionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum NotificationEventType {
+  NEW_CALL
+  MISSED_CALL
+  NEW_FORM
+  HIGH_VALUE_LEAD
+  DAILY_DIGEST
+}
+
+enum ReportFrequency {
+  WEEKLY
+  MONTHLY
+}
+
+enum ReportType {
+  FULL_SUMMARY
+  CALLS_ONLY
+  FORMS_ONLY
+  CAMPAIGN_PERFORMANCE
+}
+
+// ─── Organization (Agency / Top-level Tenant) ───────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users    User[]
+  accounts Account[]
+  invites  Invite[]
+}
+
+// ─── User (Strategist) ─────────────────────────────────
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  passwordHash   String
+  name           String
+  role           UserRole     @default(MEMBER)
+  organizationId String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+// ─── Account (Client Business) ─────────────────────────
+
+model Account {
+  id               String   @id @default(cuid())
+  name             String
+  businessPhone    String   // The real forwarding number
+  timezone         String   @default("America/New_York")
+  missedCallSms    Boolean  @default(false)
+  missedCallMsg    String   @default("Sorry we missed your call! We'll get back to you shortly.")
+  organizationId   String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  transcriptionEnabled Boolean @default(true)
+
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trackingNumbers  TrackingNumber[]
+  callLogs         CallLog[]
+  formLeads        FormLead[]
+  dniSessions      DNISession[]
+  spendEntries     SpendEntry[]
+  notificationConfigs  NotificationConfig[]
+  inAppNotifications   Notification[]
+  keywordConfigs       KeywordConfig[]
+  googleAdsConnection  GoogleAdsConnection?
+  scheduledReports     ScheduledReport[]
+
+  @@index([organizationId])
+}
+
+// ─── Tracking Number ────────────────────────────────────
+
+model TrackingNumber {
+  id           String   @id @default(cuid())
+  phoneNumber  String   @unique // E.164 format
+  friendlyName String
+  source       String   // e.g. "Google Ads"
+  medium       String   // e.g. "cpc"
+  campaignTag  String?  // e.g. "Brand Campaign"
+  twilioSid    String?  // Twilio phone number SID
+  isDNIPool    Boolean  @default(false) // Part of the DNI rotation pool
+  isActive     Boolean  @default(true)
+  accountId    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  callLogs    CallLog[]
+  dniSessions DNISession[]
+
+  @@index([accountId])
+  @@index([phoneNumber])
+}
+
+// ─── Call Log ───────────────────────────────────────────
+
+model CallLog {
+  id               String     @id @default(cuid())
+  accountId        String
+  trackingNumberId String
+  callerNumber     String
+  callerCity       String?
+  callerState      String?
+  duration         Int        @default(0) // seconds
+  recordingUrl     String?
+  recordingSid     String?
+  callStatus       CallStatus @default(RINGING)
+  twilioCallSid    String?    @unique
+  gclid            String?    // Google Click ID from DNI
+  utmSource        String?    // e.g. "google"
+  utmMedium        String?    // e.g. "cpc"
+  utmCampaign      String?    // e.g. "Brand Campaign Q1"
+  utmTerm          String?    // The keyword that triggered the ad
+  utmContent       String?
+  landingPage      String?    // The page the visitor landed on
+  googleAdsCampaign String?   // Resolved from GCLID via Google Ads API
+  googleAdsKeyword  String?   // Resolved from GCLID via Google Ads API
+  googleAdsMatchType String?  // EXACT, PHRASE, BROAD
+  googleAdsAdGroup  String?   // Ad group name
+  whisperPlayed    String?    // What whisper was played
+
+  // Transcription & AI analysis
+  transcriptionStatus TranscriptionStatus?
+  transcriptText      String?              // Full plain text transcript
+  transcriptSegments  Json?                // [{start, end, text}] for synced playback
+  callSummary         String?              // AI-generated 2-3 sentence summary
+  leadScore           Int?                 // 0-100 quality score
+  leadScoreLabel      String?              // HIGH / MEDIUM / LOW / SPAM
+  keywordsFound       Json?                // [{keyword, category, count, positions}]
+  transcriptionError  String?              // Error message if transcription failed
+  transcribedAt       DateTime?            // When transcription completed
+
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  account        Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  trackingNumber TrackingNumber @relation(fields: [trackingNumberId], references: [id], onDelete: Cascade)
+  tags           LeadTag[]
+
+  @@index([accountId])
+  @@index([trackingNumberId])
+  @@index([createdAt])
+  @@index([twilioCallSid])
+}
+
+// ─── Form Lead ──────────────────────────────────────────
+
+model FormLead {
+  id          String   @id @default(cuid())
+  accountId   String
+  formData    Json     // All captured form fields
+  pageUrl     String?
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmTerm     String?
+  utmContent  String?
+  gclid       String?
+  referrer    String?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  account Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tags    LeadTag[]
+
+  @@index([accountId])
+  @@index([createdAt])
+}
+
+// ─── Lead Tag ───────────────────────────────────────────
+
+model LeadTag {
+  id         String  @id @default(cuid())
+  label      String  // e.g. "Qualified", "Spam", "Wrong Number", "Booked"
+  color      String  @default("#6366f1") // Hex color for UI
+  callLogId  String?
+  formLeadId String?
+
+  callLog  CallLog?  @relation(fields: [callLogId], references: [id], onDelete: Cascade)
+  formLead FormLead? @relation(fields: [formLeadId], references: [id], onDelete: Cascade)
+
+  @@index([callLogId])
+  @@index([formLeadId])
+}
+
+// ─── DNI Session ────────────────────────────────────────
+
+model DNISession {
+  id               String   @id @default(cuid())
+  accountId        String
+  trackingNumberId String
+  sessionToken     String   @unique // Cookie/identifier for the visitor
+  visitorId        String?  // Persistent visitor fingerprint (_lt_vid in localStorage)
+  utmSource        String?
+  utmMedium        String?
+  utmCampaign      String?
+  utmTerm          String?
+  utmContent       String?
+  gclid            String?
+  gbraid           String?
+  wbraid           String?
+  referrer         String?
+  landingPage      String?
+  ipAddress        String?
+  userAgent        String?
+  isActive         Boolean  @default(true)  // false after expiry cleanup
+  isShared         Boolean  @default(false) // true if number shared due to pool exhaustion
+  expiresAt        DateTime // When this number becomes available again
+  lastHeartbeat    DateTime @default(now())
+  createdAt        DateTime @default(now())
+
+  account        Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  trackingNumber TrackingNumber @relation(fields: [trackingNumberId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([trackingNumberId])
+  @@index([sessionToken])
+  @@index([expiresAt])
+  @@index([visitorId, accountId, isActive])
+  @@index([trackingNumberId, isActive])
+}
+
+// ─── Spend Entry (Manual or API) ────────────────────────
+
+model SpendEntry {
+  id        String   @id @default(cuid())
+  accountId String
+  source    String   // e.g. "Google Ads"
+  medium    String   // e.g. "cpc"
+  campaign  String?
+  date      DateTime @db.Date
+  spend     Float    // Dollar amount
+  clicks    Int      @default(0)
+  impressions Int    @default(0)
+  isManual  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, source, medium, campaign, date])
+  @@index([accountId])
+  @@index([date])
+}
+
+// ─── Notification Config ────────────────────────────────
+
+model NotificationConfig {
+  id        String                @id @default(cuid())
+  accountId String
+  channel   NotificationChannel
+  target    String                // Email address, Slack webhook URL, etc.
+  events    NotificationEventType[]
+  isActive  Boolean               @default(true)
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+}
+
+// ─── In-App Notification ─────────────────────────────────
+
+model Notification {
+  id        String                @id @default(cuid())
+  accountId String
+  userId    String
+  event     NotificationEventType
+  title     String
+  body      String
+  link      String?
+  isRead    Boolean               @default(false)
+  createdAt DateTime              @default(now())
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([accountId])
+  @@index([createdAt])
+}
+
+// ─── Keyword Config (for lead scoring) ──────────────────
+
+model KeywordConfig {
+  id        String   @id @default(cuid())
+  accountId String
+  keyword   String
+  category  String   @default("general") // high_intent, booking, pricing, general, negative, spam
+  weight    Int      @default(1)         // 1-10, higher = more scoring impact
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, keyword])
+  @@index([accountId])
+}
+
+// ─── Google Ads Connection ───────────────────────────────
+
+model GoogleAdsConnection {
+  id               String    @id @default(cuid())
+  accountId        String    @unique
+  googleCustomerId String
+  refreshToken     String
+  googleEmail      String?
+  isActive         Boolean   @default(true)
+  lastSyncAt       DateTime?
+  lastSyncError    String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+// ─── Scheduled Report ────────────────────────────────────
+
+model ScheduledReport {
+  id          String          @id @default(cuid())
+  accountId   String
+  createdById String
+  reportType  ReportType      @default(FULL_SUMMARY)
+  frequency   ReportFrequency
+  recipients  String[]
+  dayOfWeek   Int?
+  dayOfMonth  Int?
+  hour        Int             @default(8)
+  isActive    Boolean         @default(true)
+  lastSentAt  DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+}
+
+// ─── Invite ──────────────────────────────────────────────
+
+model Invite {
+  id             String    @id @default(cuid())
+  organizationId String
+  email          String
+  role           UserRole  @default(MEMBER)
+  token          String    @unique
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdById    String
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([organizationId])
+}
