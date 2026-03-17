@@ -1,7 +1,7 @@
 import { prisma } from '../config/prisma';
 import { env } from '../config/env';
 import nodemailer from 'nodemailer';
-import { NotificationEventType } from '@prisma/client';
+type NotificationEventType = 'NEW_CALL' | 'MISSED_CALL' | 'NEW_FORM' | 'HIGH_VALUE_LEAD' | 'DAILY_DIGEST';
 
 // ─── Lazy SMTP transporter ───────────────────────────────
 
@@ -77,6 +77,8 @@ function formatNotification(
         body: `${data.totalCalls || 0} calls, ${data.totalForms || 0} forms, ${data.missedCalls || 0} missed, ${data.highValueLeads || 0} high-value leads`,
         link: '/dashboard',
       };
+    default:
+            throw new Error(`Unknown notification event: ${event}`);
   }
 }
 
@@ -149,7 +151,7 @@ export async function emitNotification(
     });
 
     Promise.all(
-      users.map((u) =>
+      users.map((u: any) =>
         prisma.notification.create({
           data: {
             accountId,
