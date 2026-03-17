@@ -136,17 +136,17 @@ router.get('/lead-volume', async (req: Request, res: Response) => {
     ]);
 
     // Build lookup maps
-    const callMap = new Map(callRows.map((r) => [r.date.toISOString().slice(0, 10), r.count]));
-    const formMap = new Map(formRows.map((r) => [r.date.toISOString().slice(0, 10), r.count]));
+    const callMap = new Map(callRows.map((r: { date: Date; count: number }) => [r.date.toISOString().slice(0, 10), r.count]));
+    const formMap = new Map(formRows.map((r: { date: Date; count: number }) => [r.date.toISOString().slice(0, 10), r.count]));
 
     // Zero-fill every day in range
     const series: { date: string; calls: number; forms: number; total: number }[] = [];
     const d = new Date(currentStart);
     while (d <= now) {
       const key = d.toISOString().slice(0, 10);
-      const calls = callMap.get(key) || 0;
-      const forms = formMap.get(key) || 0;
-      series.push({ date: key, calls, forms, total: calls + forms });
+      const calls: number = callMap.get(key) || 0;
+      const forms: number = formMap.get(key) || 0;
+      series.push({ date: key, calls, forms, total: (calls as number) + (forms as number) });
       d.setDate(d.getDate() + 1);
     }
 
@@ -233,7 +233,7 @@ router.get('/call-outcomes', async (req: Request, res: Response) => {
       },
     });
 
-    const outcomes = groups.map((g) => ({
+    const outcomes = groups.map((g: any) => ({
       status: g.callStatus,
       count: g._count,
     }));

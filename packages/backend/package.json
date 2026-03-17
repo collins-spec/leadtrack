@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "engines": { "node": ">=18.0.0" },
+  "prisma": { "schema": "prisma/schema.prisma" },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
