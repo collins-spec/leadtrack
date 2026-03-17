@@ -16,7 +16,7 @@ export interface ReportData {
     costPerLead: number;
   };
   calls: {
-    id: string;
+    id: string
     callerNumber: string;
     source: string;
     callStatus: string;
@@ -100,7 +100,7 @@ export async function gatherReportData(accountId: string, days: number = 30): Pr
       totalSpend,
       costPerLead: totalLeads > 0 ? +(totalSpend / totalLeads).toFixed(2) : 0,
     },
-    calls: calls.map((c) => ({
+    calls: calls.map((c: any) => ({
       id: c.id,
       callerNumber: c.callerNumber,
       source: c.trackingNumber.source,
@@ -109,14 +109,14 @@ export async function gatherReportData(accountId: string, days: number = 30): Pr
       leadScoreLabel: c.leadScoreLabel,
       createdAt: c.createdAt,
     })),
-    formLeads: formLeads.map((f) => ({
+    formLeads: formLeads.map((f: any) => ({
       id: f.id,
       contact: (f.formData as any)?.name || (f.formData as any)?.email || 'N/A',
       source: f.utmSource,
       pageUrl: f.pageUrl,
       createdAt: f.createdAt,
     })),
-    campaigns: campaignData.map((c) => ({
+    campaigns: campaignData.map((c: any) => ({
       campaign: c.campaign || '(none)',
       source: c.source,
       medium: c.medium,
