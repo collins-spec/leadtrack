@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { emitNotification } from '../services/notification';
 import { uploadOfflineConversion } from '../services/googleAds';
+import { scoreCallLead, scoreFormLead } from '../services/scoring';
 
 const p = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
 
@@ -158,6 +159,54 @@ router.delete('/form/:formId/tags/:tagId', authMiddleware, asyncHandler(async (r
   res.status(204).send();
 }));
 
+// ─── Call lead tag management ────────────────────────────────────────
+
+// Add tag to a call lead
+router.post('/call/:id/tags', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  const { label, color } = req.body;
+  if (!label) {
+    res.status(400).json({ error: 'label is required' });
+    return;
+  }
+
+  const id = p(req.params.id);
+  const callLog = await prisma.callLog.findUnique({ where: { id } });
+  if (!callLog) {
+    res.status(404).json({ error: 'Call log not found' });
+    return;
+  }
+
+  // Verify org ownership
+  const account = await prisma.account.findFirst({
+    where: { id: callLog.accountId, organizationId: req.user!.organizationId },
+  });
+  if (!account) {
+    res.status(404).json({ error: 'Call log not found' });
+    return;
+  }
+
+  const tag = await prisma.leadTag.create({
+    data: { label, color: color || '#6366f1', callLogId: callLog.id },
+  });
+
+  // Trigger Google Ads conversion upload for qualifying tags
+  const CONVERSION_TAGS = ['Qualified', 'Booked'];
+  if (CONVERSION_TAGS.includes(label) && callLog.gclid) {
+    uploadOfflineConversion(callLog.accountId, callLog.gclid, label, new Date())
+      .catch((err) => console.error('[GoogleAds] Conversion upload failed:', err));
+  }
+
+  res.status(201).json(tag);
+}));
+
+// Remove tag from a call lead
+router.delete('/call/:callId/tags/:tagId', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  await prisma.leadTag.deleteMany({
+    where: { id: p(req.params.tagId), callLogId: p(req.params.callId) },
+  });
+  res.status(204).send();
+}));
+
 // ─── Unified lead inbox (paginated, filterable, searchable) ──────────
 router.get('/all', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const accountId = req.query.accountId as string;
@@ -183,6 +232,7 @@ router.get('/all', authMiddleware, asyncHandler(async (req: Request, res: Respon
   const dateTo = req.query.dateTo as string | undefined;
   const tag = req.query.tag as string | undefined;
   const search = req.query.search as string | undefined;
+  const minScore = req.query.minScore ? parseInt(req.query.minScore as string) : undefined;
 
   // Build call where clause
   const callWhere: any = { accountId };
@@ -251,41 +301,45 @@ router.get('/all', authMiddleware, asyncHandler(async (req: Request, res: Respon
 
   const total = callCount + formCount;
 
-  // Transform and merge
+  // Transform and merge with scoring
   const merged = [
-    ...calls.map((c) => ({
-      type: 'call' as const,
-      id: c.id,
-      source: c.trackingNumber.source,
-      medium: c.trackingNumber.medium,
-      campaign: c.trackingNumber.campaignTag,
-      contact: c.callerNumber,
-      contactName: null as string | null,
-      contactEmail: null as string | null,
-      contactPhone: c.callerNumber,
-      duration: c.duration,
-      callStatus: c.callStatus,
-      tags: c.tags,
-      recordingUrl: c.recordingUrl,
-      formData: null as any,
-      pageUrl: null as string | null,
-      callerCity: c.callerCity,
-      callerState: c.callerState,
-      transcriptionStatus: c.transcriptionStatus,
-      callSummary: c.callSummary,
-      leadScore: c.leadScore,
-      leadScoreLabel: c.leadScoreLabel,
-      // Google Ads attribution
-      keyword: c.googleAdsKeyword || c.utmTerm || null,
-      adsCampaign: c.googleAdsCampaign || c.utmCampaign || null,
-      matchType: c.googleAdsMatchType || null,
-      adGroup: c.googleAdsAdGroup || null,
-      landingPage: c.landingPage || null,
-      gclid: c.gclid || null,
-      createdAt: c.createdAt,
-    })),
+    ...calls.map((c) => {
+      const score = scoreCallLead(c);
+      return {
+        type: 'call' as const,
+        id: c.id,
+        source: c.trackingNumber.source,
+        medium: c.trackingNumber.medium,
+        campaign: c.trackingNumber.campaignTag,
+        contact: c.callerNumber,
+        contactName: null as string | null,
+        contactEmail: null as string | null,
+        contactPhone: c.callerNumber,
+        duration: c.duration,
+        callStatus: c.callStatus,
+        tags: c.tags,
+        recordingUrl: c.recordingUrl,
+        formData: null as any,
+        pageUrl: null as string | null,
+        callerCity: c.callerCity,
+        callerState: c.callerState,
+        transcriptionStatus: c.transcriptionStatus,
+        callSummary: c.callSummary,
+        leadScore: score, // Auto-calculated
+        leadScoreLabel: c.leadScoreLabel,
+        // Google Ads attribution
+        keyword: c.googleAdsKeyword || c.utmTerm || null,
+        adsCampaign: c.googleAdsCampaign || c.utmCampaign || null,
+        matchType: c.googleAdsMatchType || null,
+        adGroup: c.googleAdsAdGroup || null,
+        landingPage: c.landingPage || null,
+        gclid: c.gclid || null,
+        createdAt: c.createdAt,
+      };
+    }),
     ...forms.map((f) => {
       const fd = f.formData as any;
+      const score = scoreFormLead(f);
       return {
         type: 'form' as const,
         id: f.id,
@@ -306,7 +360,7 @@ router.get('/all', authMiddleware, asyncHandler(async (req: Request, res: Respon
         callerState: null as string | null,
         transcriptionStatus: null as string | null,
         callSummary: null as string | null,
-        leadScore: null as number | null,
+        leadScore: score, // Auto-calculated
         leadScoreLabel: null as string | null,
         // Google Ads attribution
         keyword: f.utmTerm || null,
@@ -320,6 +374,7 @@ router.get('/all', authMiddleware, asyncHandler(async (req: Request, res: Respon
     }),
   ]
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .filter((lead) => (minScore ? lead.leadScore! >= minScore : true)) // Apply minScore filter
     .slice(skip, skip + limit);
 
   res.json({

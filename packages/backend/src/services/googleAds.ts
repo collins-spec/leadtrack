@@ -176,6 +176,7 @@ export async function uploadOfflineConversion(
   gclid: string,
   conversionAction: string,
   conversionDateTime: Date,
+  conversionValue?: number,
 ): Promise<void> {
   const connection = await prisma.googleAdsConnection.findUnique({
     where: { accountId },
@@ -185,6 +186,20 @@ export async function uploadOfflineConversion(
   try {
     const accessToken = await getAccessToken(connection.refreshToken);
     const customerId = connection.googleCustomerId.replace(/-/g, '');
+
+    // Look up conversion action ID from mapping table
+    const mapping = await prisma.conversionActionMapping.findUnique({
+      where: {
+        accountId_tagLabel: {
+          accountId,
+          tagLabel: conversionAction,
+        },
+      },
+    });
+
+    // Use mapped conversion action ID if available, otherwise fall back to tag name
+    const conversionActionResource = mapping?.conversionActionId ||
+      `customers/${customerId}/conversionActions/${conversionAction}`;
 
     const apiUrl = `https://googleads.googleapis.com/v19/customers/${customerId}:uploadClickConversions`;
 
@@ -198,16 +213,16 @@ export async function uploadOfflineConversion(
       body: JSON.stringify({
         conversions: [{
           gclid,
-          conversionAction: `customers/${customerId}/conversionActions/${conversionAction}`,
+          conversionAction: conversionActionResource,
           conversionDateTime: conversionDateTime.toISOString().replace('T', ' ').slice(0, 19) + '+00:00',
-          conversionValue: 1.0,
+          conversionValue: conversionValue || 1.0,
           currencyCode: 'USD',
         }],
         partialFailure: true,
       }),
     });
 
-    console.log(`[GoogleAds] Uploaded conversion for gclid=${gclid}`);
+    console.log(`[GoogleAds] Uploaded conversion for gclid=${gclid} using action=${conversionActionResource} with value=${conversionValue || 1.0}`);
   } catch (err) {
     console.error(`[GoogleAds] Conversion upload failed for gclid=${gclid}:`, err);
   }
@@ -286,6 +301,73 @@ export async function resolveGclidAttribution(
     }
   } catch (err) {
     console.error(`[GoogleAds] GCLID resolution failed for ${gclid}:`, err);
+  }
+}
+
+// ─── Conversion Actions ─────────────────────────────────
+
+export async function fetchConversionActions(
+  accountId: string
+): Promise<Array<{ id: string; name: string; type: string }>> {
+  const connection = await prisma.googleAdsConnection.findUnique({
+    where: { accountId },
+  });
+  if (!connection || !connection.isActive || !connection.googleCustomerId) {
+    return [];
+  }
+
+  try {
+    const accessToken = await getAccessToken(connection.refreshToken);
+    const customerId = connection.googleCustomerId.replace(/-/g, '');
+
+    const query = `
+      SELECT
+        conversion_action.id,
+        conversion_action.name,
+        conversion_action.type
+      FROM conversion_action
+      WHERE conversion_action.status != 'REMOVED'
+    `;
+
+    const apiUrl = `https://googleads.googleapis.com/v19/customers/${customerId}/googleAds:searchStream`;
+
+    const res = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'developer-token': env.GOOGLE_ADS_DEVELOPER_TOKEN,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Google Ads API error: ${res.status}`);
+    }
+
+    const conversionActions: Array<{ id: string; name: string; type: string }> = [];
+    const lines = (await res.text()).trim().split('\n');
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const data = JSON.parse(line);
+
+      for (const result of data.results || []) {
+        const action = result.conversionAction;
+        if (action) {
+          conversionActions.push({
+            id: action.resourceName || action.id,
+            name: action.name,
+            type: action.type,
+          });
+        }
+      }
+    }
+
+    return conversionActions;
+  } catch (err) {
+    console.error(`[GoogleAds] Failed to fetch conversion actions:`, err);
+    throw err;
   }
 }
 

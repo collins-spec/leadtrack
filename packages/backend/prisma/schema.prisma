@@ -108,17 +108,18 @@ model Account {
 
   transcriptionEnabled Boolean @default(true)
 
-  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  trackingNumbers  TrackingNumber[]
-  callLogs         CallLog[]
-  formLeads        FormLead[]
-  dniSessions      DNISession[]
-  spendEntries     SpendEntry[]
-  notificationConfigs  NotificationConfig[]
-  inAppNotifications   Notification[]
-  keywordConfigs       KeywordConfig[]
-  googleAdsConnection  GoogleAdsConnection?
-  scheduledReports     ScheduledReport[]
+  organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trackingNumbers          TrackingNumber[]
+  callLogs                 CallLog[]
+  formLeads                FormLead[]
+  dniSessions              DNISession[]
+  spendEntries             SpendEntry[]
+  notificationConfigs      NotificationConfig[]
+  inAppNotifications       Notification[]
+  keywordConfigs           KeywordConfig[]
+  googleAdsConnection      GoogleAdsConnection?
+  conversionActionMappings ConversionActionMapping[]
+  scheduledReports         ScheduledReport[]
 
   @@index([organizationId])
 }
@@ -185,6 +186,10 @@ model CallLog {
   transcriptionError  String?              // Error message if transcription failed
   transcribedAt       DateTime?            // When transcription completed
 
+  // Revenue tracking
+  quotedValue  Float?  // Estimated/quoted value of the lead
+  salesValue   Float?  // Actual sales revenue received from the lead
+
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
@@ -196,6 +201,7 @@ model CallLog {
   @@index([trackingNumberId])
   @@index([createdAt])
   @@index([twilioCallSid])
+  @@index([googleAdsKeyword])
 }
 
 // ─── Form Lead ──────────────────────────────────────────
@@ -366,7 +372,40 @@ model GoogleAdsConnection {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
+  account  Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  syncLogs GoogleAdsSyncLog[]
+}
+
+// ─── Google Ads Sync Log ─────────────────────────────────
+
+model GoogleAdsSyncLog {
+  id            String   @id @default(cuid())
+  connectionId  String
+  status        String   // SUCCESS, ERROR
+  error         String?
+  recordsSynced Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  connection GoogleAdsConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId])
+}
+
+// ─── Conversion Action Mapping ───────────────────────────
+
+model ConversionActionMapping {
+  id                   String   @id @default(cuid())
+  accountId            String
+  tagLabel             String   // "Qualified", "Booked", etc.
+  conversionActionId   String   // "customers/123/conversionActions/456"
+  conversionActionName String
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, tagLabel])
+  @@index([accountId])
 }
 
 // ─── Scheduled Report ────────────────────────────────────

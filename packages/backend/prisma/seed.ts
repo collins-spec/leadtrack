@@ -54,6 +54,29 @@ async function main() {
     },
   });
 
+  // Create preset tags for ABC Plumbing
+  const presetTags = [
+    { name: 'Qualified', color: '#10b981' }, // green
+    { name: 'Spam', color: '#ef4444' }, // red
+    { name: 'Wrong Number', color: '#6b7280' }, // gray
+    { name: 'Booked', color: '#3b82f6' }, // blue
+    { name: 'Missed', color: '#f59e0b' }, // yellow
+    { name: 'Follow-Up', color: '#f97316' }, // orange
+    { name: 'Customer', color: '#8b5cf6' }, // purple
+    { name: 'Not Interested', color: '#64748b' }, // slate
+  ];
+
+  const tags: Record<string, any> = {};
+  for (const tag of presetTags) {
+    tags[tag.name] = await prisma.leadTag.create({
+      data: {
+        label: tag.name,
+        color: tag.color,
+        // Not linked to any lead yet
+      },
+    });
+  }
+
   // Create tracking numbers (no real Twilio SIDs for demo)
   const tn1 = await prisma.trackingNumber.create({
     data: {
@@ -165,19 +188,33 @@ async function main() {
       },
     });
 
-    // Add tags to some calls
-    if (duration > 60) {
+    // Add tags to some calls using preset tags
+    if (duration > 60 && i % 3 === 0) {
+      // ~33% of long calls tagged as Qualified
       await prisma.leadTag.create({
-        data: { label: 'Qualified', color: '#22c55e', callLogId: call.id },
+        data: { label: tags['Qualified'].label, color: tags['Qualified'].color, callLogId: call.id },
       });
-    } else if (duration < 15 && duration > 0) {
+    } else if (duration < 15 && duration > 0 && i % 4 === 0) {
+      // ~25% of short calls tagged as Spam
       await prisma.leadTag.create({
-        data: { label: 'Spam', color: '#ef4444', callLogId: call.id },
+        data: { label: tags['Spam'].label, color: tags['Spam'].color, callLogId: call.id },
+      });
+    } else if (status === 'NO_ANSWER' && i % 2 === 0) {
+      // ~50% of missed calls tagged as Missed
+      await prisma.leadTag.create({
+        data: { label: tags['Missed'].label, color: tags['Missed'].color, callLogId: call.id },
       });
     }
-    if (Math.random() > 0.7 && duration > 120) {
+    if (duration > 120 && i % 7 === 0) {
+      // ~14% of very long calls tagged as Booked
       await prisma.leadTag.create({
-        data: { label: 'Booked', color: '#3b82f6', callLogId: call.id },
+        data: { label: tags['Booked'].label, color: tags['Booked'].color, callLogId: call.id },
+      });
+    }
+    if (i % 11 === 0) {
+      // ~9% tagged as Follow-Up
+      await prisma.leadTag.create({
+        data: { label: tags['Follow-Up'].label, color: tags['Follow-Up'].color, callLogId: call.id },
       });
     }
   }
@@ -218,7 +255,7 @@ async function main() {
     const date = new Date();
     date.setDate(date.getDate() - daysAgo);
 
-    await prisma.formLead.create({
+    const formLead = await prisma.formLead.create({
       data: {
         accountId: plumber.id,
         formData: {
@@ -236,6 +273,19 @@ async function main() {
         createdAt: date,
       },
     });
+
+    // Add tags to some form leads
+    if (i % 3 === 0) {
+      // ~33% tagged as Follow-Up
+      await prisma.leadTag.create({
+        data: { label: tags['Follow-Up'].label, color: tags['Follow-Up'].color, formLeadId: formLead.id },
+      });
+    } else if (i % 5 === 0) {
+      // ~20% tagged as Qualified
+      await prisma.leadTag.create({
+        data: { label: tags['Qualified'].label, color: tags['Qualified'].color, formLeadId: formLead.id },
+      });
+    }
   }
 
   // Spend entries
@@ -263,8 +313,9 @@ async function main() {
   console.log(`  User: ${user.email} / password123`);
   console.log(`  Accounts: ${plumber.name}, ${hvac.name}`);
   console.log(`  Tracking numbers: 7 (4 static + 3 DNI pool)`);
-  console.log(`  Call logs: ~60`);
-  console.log(`  Form leads: 12`);
+  console.log(`  Call logs: ~60 (with sample tags applied)`);
+  console.log(`  Form leads: 12 (with sample tags applied)`);
+  console.log(`  Preset tags: 8 (Qualified, Spam, Wrong Number, Booked, Missed, Follow-Up, Customer, Not Interested)`);
 }
 
 main()

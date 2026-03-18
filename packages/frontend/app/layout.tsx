@@ -16,6 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "LeadTrack — Call Tracking & Lead Management",
   description: "Track calls, capture leads, and attribute conversions for local service businesses.",
+  themeColor: "#0D0D0D",
 };
 
 export default function RootLayout({

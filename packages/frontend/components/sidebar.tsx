@@ -15,6 +15,7 @@ import {
   Menu,
   X,
   Building2,
+  TrendingUp,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { AccountSwitcher } from "./account-switcher";
@@ -23,6 +24,7 @@ import { NotificationBell } from "./notification-bell";
 const navItems = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/leads", label: "Lead Inbox", icon: Inbox },
+  { href: "/dashboard/keywords", label: "Keywords", icon: TrendingUp },
   { href: "/dashboard/calls", label: "Call Log", icon: Phone },
   { href: "/dashboard/numbers", label: "Tracking Numbers", icon: Hash },
   { href: "/dashboard/accounts", label: "Sub Accounts", icon: Building2 },

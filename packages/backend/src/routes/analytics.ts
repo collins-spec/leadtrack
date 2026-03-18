@@ -506,4 +506,58 @@ router.get('/spend', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /keywords
+ * Returns keyword-level performance metrics
+ */
+router.get('/keywords', authMiddleware, asyncHandler(async (req, res) => {
+  const accountId = req.query.accountId as string;
+  if (!accountId) {
+    return res.status(400).json({ error: 'accountId required' });
+  }
+
+  const { currentStart, now } = getDateRange(req);
+
+  const keywords = await prisma.$queryRaw<Array<{
+    keyword: string;
+    match_type: string | null;
+    campaign: string | null;
+    utm_source: string | null;
+    utm_medium: string | null;
+    utm_campaign: string | null;
+    calls: number;
+    qualified: number;
+    avg_duration: number;
+    conv_rate: number;
+    avg_score: number;
+    total_quoted: number;
+    total_sales: number;
+  }>>`
+    SELECT
+      cl."googleAdsKeyword" as keyword,
+      cl."googleAdsMatchType" as match_type,
+      cl."googleAdsCampaign" as campaign,
+      cl."utmSource" as utm_source,
+      cl."utmMedium" as utm_medium,
+      cl."utmCampaign" as utm_campaign,
+      COUNT(*)::int as calls,
+      COUNT(*) FILTER (WHERE lt."label" IN ('Qualified', 'Booked'))::int as qualified,
+      AVG(cl."duration")::int as avg_duration,
+      ROUND((COUNT(*) FILTER (WHERE lt."label" IN ('Qualified', 'Booked'))::float / NULLIF(COUNT(*), 0)) * 100, 2) as conv_rate,
+      ROUND(AVG(COALESCE(cl."leadScore", 0))::numeric / 10, 1) as avg_score,
+      COALESCE(SUM(cl."quotedValue"), 0)::float as total_quoted,
+      COALESCE(SUM(cl."salesValue"), 0)::float as total_sales
+    FROM "CallLog" cl
+    LEFT JOIN "LeadTag" lt ON lt."callLogId" = cl."id"
+    WHERE cl."accountId" = ${accountId}
+      AND cl."createdAt" >= ${currentStart}
+      AND cl."createdAt" <= ${now}
+      AND cl."googleAdsKeyword" IS NOT NULL
+    GROUP BY cl."googleAdsKeyword", cl."googleAdsMatchType", cl."googleAdsCampaign", cl."utmSource", cl."utmMedium", cl."utmCampaign"
+    ORDER BY calls DESC
+  `;
+
+  res.json({ keywords });
+}));
+
 export default router;

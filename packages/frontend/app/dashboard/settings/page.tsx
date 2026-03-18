@@ -99,6 +99,11 @@ export default function SettingsPage() {
   const [gadsStatus, setGadsStatus] = useState<any>(null);
   const [gadsCustomerId, setGadsCustomerId] = useState("");
   const [gadsSyncing, setGadsSyncing] = useState(false);
+  const [conversionActions, setConversionActions] = useState<Array<{id: string; name: string; type: string}>>([]);
+  const [conversionMappings, setConversionMappings] = useState<Array<{id: string; tagLabel: string; conversionActionId: string; conversionActionName: string}>>([]);
+  const [fetchingActions, setFetchingActions] = useState(false);
+  const [savingMapping, setSavingMapping] = useState(false);
+  const [selectedMappings, setSelectedMappings] = useState<Record<string, string>>({});
 
   // Scheduled Reports state
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -137,6 +142,14 @@ export default function SettingsPage() {
     } catch { /* */ }
   }, [currentAccount]);
 
+  const loadConversionMappings = useCallback(async () => {
+    if (!currentAccount) return;
+    try {
+      const { mappings } = await api.getConversionMappings(currentAccount.id);
+      setConversionMappings(mappings);
+    } catch { /* */ }
+  }, [currentAccount]);
+
   const loadSchedules = useCallback(async () => {
     if (!currentAccount) return;
     try { setSchedules(await api.getScheduledReports(currentAccount.id)); } catch { /* */ }
@@ -155,10 +168,11 @@ export default function SettingsPage() {
       loadKeywords();
       loadNotifConfigs();
       loadGoogleAdsStatus();
+      loadConversionMappings();
       loadSchedules();
       loadTeam();
     }
-  }, [currentAccount, loadKeywords, loadNotifConfigs, loadGoogleAdsStatus, loadSchedules, loadTeam]);
+  }, [currentAccount, loadKeywords, loadNotifConfigs, loadGoogleAdsStatus, loadConversionMappings, loadSchedules, loadTeam]);
 
   // ─── Handlers ─────────────────────────────────────────
 
@@ -247,6 +261,50 @@ export default function SettingsPage() {
     if (!currentAccount || !confirm("Disconnect Google Ads?")) return;
     try { await api.disconnectGoogleAds(currentAccount.id); setGadsStatus({ connected: false }); setGadsCustomerId(""); }
     catch (err: any) { alert(err.message || "Failed"); }
+  };
+
+  const handleFetchConversionActions = async () => {
+    if (!currentAccount) return;
+    setFetchingActions(true);
+    try {
+      const { conversionActions: actions } = await api.getConversionActions(currentAccount.id);
+      setConversionActions(actions);
+    } catch (err: any) {
+      alert(err.message || "Failed to fetch conversion actions");
+    } finally {
+      setFetchingActions(false);
+    }
+  };
+
+  const handleSaveMapping = async (tagLabel: string) => {
+    if (!currentAccount || !selectedMappings[tagLabel]) return;
+    setSavingMapping(true);
+    try {
+      const selectedAction = conversionActions.find(a => a.id === selectedMappings[tagLabel]);
+      if (!selectedAction) return;
+
+      await api.createConversionMapping({
+        accountId: currentAccount.id,
+        tagLabel,
+        conversionActionId: selectedAction.id,
+        conversionActionName: selectedAction.name,
+      });
+      await loadConversionMappings();
+      setSelectedMappings(prev => ({ ...prev, [tagLabel]: "" }));
+    } catch (err: any) {
+      alert(err.message || "Failed to save mapping");
+    } finally {
+      setSavingMapping(false);
+    }
+  };
+
+  const handleDeleteMapping = async (id: string) => {
+    try {
+      await api.deleteConversionMapping(id);
+      setConversionMappings(prev => prev.filter(m => m.id !== id));
+    } catch (err: any) {
+      alert(err.message || "Failed to delete mapping");
+    }
   };
 
   const handleAddSchedule = async () => {
@@ -382,26 +440,155 @@ export default function SettingsPage() {
             {!gadsStatus?.connected ? (
               <Button onClick={handleConnectGoogleAds}><ExternalLink className="h-4 w-4 mr-2" />Connect Google Ads</Button>
             ) : (
-              <div className="space-y-3">
-                {gadsStatus.googleEmail && (
-                  <div className="flex items-center gap-2 text-sm">
-                    <Mail className="h-4 w-4 text-muted-foreground" />
-                    <span>{gadsStatus.googleEmail}</span>
-                    <Badge variant="outline" className="text-xs">Connected</Badge>
+              <div className="space-y-6">
+                {/* Connection Info */}
+                <div className="space-y-3">
+                  {gadsStatus.googleEmail && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <Mail className="h-4 w-4 text-muted-foreground" />
+                      <span>{gadsStatus.googleEmail}</span>
+                      <Badge variant="outline" className="text-xs">Connected</Badge>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <Input value={gadsCustomerId} onChange={(e) => setGadsCustomerId(e.target.value)} placeholder="xxx-xxx-xxxx" />
+                    <Button size="sm" onClick={handleSaveCustomerId}>Save</Button>
                   </div>
-                )}
-                <div className="flex gap-2">
-                  <Input value={gadsCustomerId} onChange={(e) => setGadsCustomerId(e.target.value)} placeholder="xxx-xxx-xxxx" />
-                  <Button size="sm" onClick={handleSaveCustomerId}>Save</Button>
+                  <p className="text-xs text-muted-foreground">Enter your Google Ads Customer ID (top-right of Google Ads).</p>
                 </div>
-                <p className="text-xs text-muted-foreground">Enter your Google Ads Customer ID (top-right of Google Ads).</p>
-                {gadsStatus.lastSyncAt && <p className="text-xs text-muted-foreground">Last synced: {(() => { const diff = Date.now() - new Date(gadsStatus.lastSyncAt).getTime(); const mins = Math.floor(diff / 60000); if (mins < 1) return "just now"; if (mins < 60) return `${mins}m ago`; const hrs = Math.floor(mins / 60); if (hrs < 24) return `${hrs}h ago`; return `${Math.floor(hrs / 24)}d ago`; })()}</p>}
-                {gadsStatus.lastSyncError && <p className="text-xs text-red-500">Sync error: {gadsStatus.lastSyncError}</p>}
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={handleGadsSync} disabled={gadsSyncing}>
-                    <RefreshCw className={`h-4 w-4 mr-1 ${gadsSyncing ? "animate-spin" : ""}`} />{gadsSyncing ? "Syncing..." : "Sync Now"}
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={handleDisconnectGoogleAds} className="text-red-500">Disconnect</Button>
+
+                {/* Conversion Action Mappings */}
+                <div className="space-y-3 pt-3 border-t">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-medium">Conversion Action Mappings</h4>
+                      <p className="text-xs text-muted-foreground mt-0.5">Map lead tags to Google Ads conversion actions</p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={handleFetchConversionActions} disabled={fetchingActions}>
+                      <RefreshCw className={`h-3.5 w-3.5 mr-1 ${fetchingActions ? "animate-spin" : ""}`} />
+                      {fetchingActions ? "Loading..." : "Fetch Actions"}
+                    </Button>
+                  </div>
+
+                  {conversionMappings.length > 0 && (
+                    <div className="space-y-2">
+                      {conversionMappings.map((mapping) => (
+                        <div key={mapping.id} className="flex items-center gap-2 rounded-lg border p-2 text-sm">
+                          <Badge variant="outline" className="shrink-0">{mapping.tagLabel}</Badge>
+                          <span className="text-xs text-muted-foreground truncate flex-1">{mapping.conversionActionName}</span>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteMapping(mapping.id)} className="h-6 w-6 p-0 text-red-500 hover:text-red-700">
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {conversionActions.length > 0 && (
+                    <div className="space-y-2 rounded-lg border p-3 bg-muted/30">
+                      <p className="text-xs font-medium">Add New Mapping</p>
+                      {["Qualified", "Booked", "Customer"].map((tag) => {
+                        const existingMapping = conversionMappings.find(m => m.tagLabel === tag);
+                        if (existingMapping) return null;
+                        return (
+                          <div key={tag} className="flex items-center gap-2">
+                            <Badge variant="outline" className="w-24 shrink-0 justify-center">{tag}</Badge>
+                            <Select value={selectedMappings[tag] || ""} onValueChange={(v) => setSelectedMappings(prev => ({ ...prev, [tag]: v || "" }))}>
+                              <SelectTrigger className="flex-1 h-8 text-xs">
+                                <span className="truncate">{selectedMappings[tag] ? conversionActions.find(a => a.id === selectedMappings[tag])?.name : "Select action..."}</span>
+                              </SelectTrigger>
+                              <SelectContent>
+                                {conversionActions.map((action) => (
+                                  <SelectItem key={action.id} value={action.id} className="text-xs">{action.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Button size="sm" variant="outline" onClick={() => handleSaveMapping(tag)} disabled={!selectedMappings[tag] || savingMapping} className="h-8 px-2 text-xs">
+                              Save
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Sync Status */}
+                <div className="space-y-3 pt-3 border-t">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium">Sync Status</h4>
+                    {gadsStatus.nextSyncAt && (
+                      <span className="text-xs text-muted-foreground">
+                        Next: {new Date(gadsStatus.nextSyncAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+
+                  {gadsStatus.lastSyncAt && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">Last synced:</span>
+                      <span>{(() => {
+                        const diff = Date.now() - new Date(gadsStatus.lastSyncAt).getTime();
+                        const mins = Math.floor(diff / 60000);
+                        if (mins < 1) return "just now";
+                        if (mins < 60) return `${mins}m ago`;
+                        const hrs = Math.floor(mins / 60);
+                        if (hrs < 24) return `${hrs}h ago`;
+                        return `${Math.floor(hrs / 24)}d ago`;
+                      })()}</span>
+                      {!gadsStatus.lastSyncError && (
+                        <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-[10px] px-1.5 py-0">
+                          Success
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+
+                  {gadsStatus.lastSyncError && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-2">
+                      <p className="text-xs font-medium text-red-800">Sync Error</p>
+                      <p className="text-xs text-red-600 mt-0.5">{gadsStatus.lastSyncError}</p>
+                    </div>
+                  )}
+
+                  {gadsStatus.syncHistory && gadsStatus.syncHistory.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-muted-foreground">Recent Syncs</p>
+                      <div className="space-y-1 max-h-32 overflow-y-auto">
+                        {gadsStatus.syncHistory.map((log: any) => (
+                          <div key={log.id} className="flex items-center gap-2 text-xs rounded border p-1.5">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px] px-1.5 py-0 shrink-0",
+                                log.status === "SUCCESS"
+                                  ? "bg-green-50 text-green-700 border-green-200"
+                                  : "bg-red-50 text-red-700 border-red-200"
+                              )}
+                            >
+                              {log.status}
+                            </Badge>
+                            <span className="text-muted-foreground">
+                              {new Date(log.createdAt).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            {log.status === "SUCCESS" && log.recordsSynced > 0 && (
+                              <span className="text-muted-foreground">({log.recordsSynced} records)</span>
+                            )}
+                            {log.error && (
+                              <span className="text-red-600 truncate flex-1 text-[10px]">{log.error}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={handleGadsSync} disabled={gadsSyncing}>
+                      <RefreshCw className={`h-4 w-4 mr-1 ${gadsSyncing ? "animate-spin" : ""}`} />{gadsSyncing ? "Syncing..." : "Sync Now"}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={handleDisconnectGoogleAds} className="text-red-500">Disconnect</Button>
+                  </div>
                 </div>
               </div>
             )}

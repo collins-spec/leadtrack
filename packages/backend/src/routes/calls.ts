@@ -118,7 +118,8 @@ router.post('/:id/tags', asyncHandler(async (req: Request, res: Response) => {
   // Trigger Google Ads conversion upload for qualifying tags
   const CONVERSION_TAGS = ['Qualified', 'Booked'];
   if (CONVERSION_TAGS.includes(label) && call.gclid) {
-    uploadOfflineConversion(call.accountId, call.gclid, label, new Date())
+    const conversionValue = call.salesValue || call.quotedValue || undefined;
+    uploadOfflineConversion(call.accountId, call.gclid, label, new Date(), conversionValue)
       .catch((err) => console.error('[GoogleAds] Conversion upload failed:', err));
   }
 
@@ -131,6 +132,55 @@ router.delete('/:callId/tags/:tagId', asyncHandler(async (req: Request, res: Res
     where: { id: p(req.params.tagId), callLogId: p(req.params.callId) },
   });
   res.status(204).send();
+}));
+
+// Update call revenue values
+router.patch('/:id/revenue', asyncHandler(async (req: Request, res: Response) => {
+  const { quotedValue, salesValue } = req.body;
+
+  const call = await prisma.callLog.findUnique({
+    where: { id: p(req.params.id) },
+    include: {
+      account: { select: { organizationId: true } },
+      tags: true,
+    },
+  });
+
+  if (!call || call.account.organizationId !== req.user!.organizationId) {
+    res.status(404).json({ error: 'Call not found' });
+    return;
+  }
+
+  const data: any = {};
+  if (quotedValue !== undefined) data.quotedValue = quotedValue === null ? null : parseFloat(quotedValue);
+  if (salesValue !== undefined) data.salesValue = salesValue === null ? null : parseFloat(salesValue);
+
+  const updated = await prisma.callLog.update({
+    where: { id: call.id },
+    data,
+  });
+
+  // Update Google Ads conversion value if this call has qualifying tags and a GCLID
+  const CONVERSION_TAGS = ['Qualified', 'Booked'];
+  const hasQualifyingTag = call.tags.some(tag => CONVERSION_TAGS.includes(tag.label));
+
+  if (hasQualifyingTag && call.gclid) {
+    const qualifyingTag = call.tags.find(tag => CONVERSION_TAGS.includes(tag.label));
+    const newConversionValue = (salesValue !== undefined ? data.salesValue : updated.salesValue) ||
+                               (quotedValue !== undefined ? data.quotedValue : updated.quotedValue);
+
+    if (qualifyingTag && newConversionValue) {
+      uploadOfflineConversion(
+        call.accountId,
+        call.gclid,
+        qualifyingTag.label,
+        new Date(),
+        newConversionValue
+      ).catch((err) => console.error('[GoogleAds] Conversion value update failed:', err));
+    }
+  }
+
+  res.json(updated);
 }));
 
 export default router;

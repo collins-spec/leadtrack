@@ -214,6 +214,8 @@ export default function CallsPage() {
                   </button>
                 </TableHead>
                 <TableHead className="hidden lg:table-cell">Tags</TableHead>
+                <TableHead className="hidden xl:table-cell">Quoted $</TableHead>
+                <TableHead className="hidden xl:table-cell">Sales $</TableHead>
                 <TableHead>
                   <button onClick={() => toggleSort("date")} className="flex items-center hover:text-foreground transition-colors">
                     Date<SortIcon col="date" />
@@ -317,6 +319,34 @@ export default function CallsPage() {
                         </Badge>
                       ))}
                     </div>
+                  </TableCell>
+                  <TableCell className="hidden xl:table-cell">
+                    <input
+                      type="number"
+                      className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                      placeholder="0"
+                      defaultValue={call.quotedValue || ''}
+                      onBlur={(e) => {
+                        const value = e.target.value ? parseFloat(e.target.value) : null;
+                        api.updateCallRevenue(call.id, value, undefined)
+                          .then(() => fetchCalls(pagination.page))
+                          .catch(console.error);
+                      }}
+                    />
+                  </TableCell>
+                  <TableCell className="hidden xl:table-cell">
+                    <input
+                      type="number"
+                      className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                      placeholder="0"
+                      defaultValue={call.salesValue || ''}
+                      onBlur={(e) => {
+                        const value = e.target.value ? parseFloat(e.target.value) : null;
+                        api.updateCallRevenue(call.id, undefined, value)
+                          .then(() => fetchCalls(pagination.page))
+                          .catch(console.error);
+                      }}
+                    />
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                     {formatDate(call.createdAt)}

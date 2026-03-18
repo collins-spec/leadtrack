@@ -168,6 +168,7 @@ class ApiClient {
     dateTo?: string;
     tag?: string;
     search?: string;
+    minScore?: number;
   }) {
     const qs = new URLSearchParams({ accountId });
     if (params?.page) qs.set('page', String(params.page));
@@ -178,7 +179,23 @@ class ApiClient {
     if (params?.dateTo) qs.set('dateTo', params.dateTo);
     if (params?.tag) qs.set('tag', params.tag);
     if (params?.search) qs.set('search', params.search);
+    if (params?.minScore) qs.set('minScore', String(params.minScore));
     return this.request<{ leads: any[]; pagination: any }>(`/leads/all?${qs}`);
+  }
+
+  // Alias for unified leads (Phase 3)
+  async getLeads(accountId: string, params?: {
+    page?: number;
+    limit?: number;
+    type?: 'call' | 'form' | 'all';
+    source?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    tag?: string;
+    search?: string;
+    minScore?: number;
+  }) {
+    return this.getUnifiedLeads(accountId, params);
   }
 
   async getAllLeads(accountId: string) {
@@ -190,21 +207,32 @@ class ApiClient {
     return this.request<any>(`/leads/form/${id}`);
   }
 
-  // Tags — calls
+  // Tags — calls (Phase 3 endpoints)
   async addCallTag(callId: string, label: string, color?: string) {
-    return this.request<any>(`/calls/${callId}/tags`, {
+    return this.request<any>(`/leads/call/${callId}/tags`, {
       method: 'POST',
       body: JSON.stringify({ label, color }),
     });
   }
 
+  async addTagToCall(callId: string, label: string, color?: string) {
+    return this.addCallTag(callId, label, color);
+  }
+
   async removeCallTag(callId: string, tagId: string) {
-    return this.request<void>(`/calls/${callId}/tags/${tagId}`, {
+    return this.request<void>(`/leads/call/${callId}/tags/${tagId}`, {
       method: 'DELETE',
     });
   }
 
-  // Tags — form leads
+  async updateCallRevenue(callId: string, quotedValue?: number | null, salesValue?: number | null) {
+    return this.request<any>(`/leads/call/${callId}/revenue`, {
+      method: 'PATCH',
+      body: JSON.stringify({ quotedValue, salesValue }),
+    });
+  }
+
+  // Tags — form leads (Phase 3 endpoints)
   async addFormLeadTag(formLeadId: string, label: string, color?: string) {
     return this.request<any>(`/leads/form/${formLeadId}/tags`, {
       method: 'POST',
@@ -212,10 +240,23 @@ class ApiClient {
     });
   }
 
+  async addTagToForm(formLeadId: string, label: string, color?: string) {
+    return this.addFormLeadTag(formLeadId, label, color);
+  }
+
   async removeFormLeadTag(formLeadId: string, tagId: string) {
     return this.request<void>(`/leads/form/${formLeadId}/tags/${tagId}`, {
       method: 'DELETE',
     });
+  }
+
+  // Universal tag removal (requires lead type and ID)
+  async removeTag(leadId: string, leadType: 'call' | 'form', tagId: string) {
+    if (leadType === 'call') {
+      return this.removeCallTag(leadId, tagId);
+    } else {
+      return this.removeFormLeadTag(leadId, tagId);
+    }
   }
 
   // Analytics
@@ -280,6 +321,20 @@ class ApiClient {
         costPerLead: number;
       }[];
     }>(`/analytics/campaigns?accountId=${accountId}&range=${range}`);
+  }
+
+  async getKeywordPerformance(accountId: string, range: number = 30) {
+    return this.request<{
+      keywords: Array<{
+        keyword: string;
+        match_type: string | null;
+        campaign: string | null;
+        calls: number;
+        qualified: number;
+        avg_duration: number;
+        conv_rate: number;
+      }>;
+    }>(`/analytics/keywords?accountId=${accountId}&range=${range}`);
   }
 
   async createSpendEntry(data: {
@@ -427,6 +482,14 @@ class ApiClient {
       googleCustomerId?: string;
       lastSyncAt?: string;
       lastSyncError?: string;
+      nextSyncAt?: string;
+      syncHistory?: Array<{
+        id: string;
+        status: string;
+        error?: string;
+        recordsSynced: number;
+        createdAt: string;
+      }>;
     }>(`/google-ads/status?accountId=${accountId}`);
   }
 
@@ -451,6 +514,42 @@ class ApiClient {
     return this.request<{ message: string }>('/google-ads/sync', {
       method: 'POST',
       body: JSON.stringify({ accountId }),
+    });
+  }
+
+  async getConversionActions(accountId: string) {
+    return this.request<{
+      conversionActions: Array<{ id: string; name: string; type: string }>;
+    }>(`/google-ads/conversion-actions?accountId=${accountId}`);
+  }
+
+  async getConversionMappings(accountId: string) {
+    return this.request<{
+      mappings: Array<{
+        id: string;
+        tagLabel: string;
+        conversionActionId: string;
+        conversionActionName: string;
+        isActive: boolean;
+      }>;
+    }>(`/google-ads/conversion-mappings?accountId=${accountId}`);
+  }
+
+  async createConversionMapping(data: {
+    accountId: string;
+    tagLabel: string;
+    conversionActionId: string;
+    conversionActionName: string;
+  }) {
+    return this.request<any>('/google-ads/conversion-mappings', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteConversionMapping(id: string) {
+    return this.request<void>(`/google-ads/conversion-mappings/${id}`, {
+      method: 'DELETE',
     });
   }
 
