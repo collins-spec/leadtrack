@@ -110,7 +110,7 @@ export default function KeywordsPage() {
           : bVal.localeCompare(aVal);
       }
 
-      return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+      return sortOrder === 'asc' ? Number(aVal) - Number(bVal) : Number(bVal) - Number(aVal);
     });
 
     setFilteredKeywords(filtered);
