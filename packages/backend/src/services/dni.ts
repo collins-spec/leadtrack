@@ -20,6 +20,7 @@ export interface DNISessionParams {
   gclid?: string;
   gbraid?: string;
   wbraid?: string;
+  fbclid?: string;
   referrer?: string;
   landingPage?: string;
   ipAddress?: string;
@@ -230,6 +231,7 @@ export async function getOrCreateDNISession(
           gclid: params.gclid || null,
           gbraid: params.gbraid || null,
           wbraid: params.wbraid || null,
+          fbclid: params.fbclid || null,
           referrer: params.referrer || null,
           landingPage: params.landingPage || null,
           ipAddress: params.ipAddress || null,

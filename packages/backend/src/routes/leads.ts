@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { emitNotification } from '../services/notification';
 import { uploadOfflineConversion } from '../services/googleAds';
+import { uploadFacebookConversion } from '../services/facebookAds';
 import { scoreCallLead, scoreFormLead } from '../services/scoring';
 
 const p = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
@@ -12,7 +13,7 @@ const router = Router();
 
 // ─── Public endpoint: form submission (called by client JS snippet) ──
 router.post('/form', asyncHandler(async (req: Request, res: Response) => {
-  const { accountId, formData, pageUrl, utmSource, utmMedium, utmCampaign, utmTerm, utmContent, gclid, referrer } = req.body;
+  const { accountId, formData, pageUrl, utmSource, utmMedium, utmCampaign, utmTerm, utmContent, gclid, fbclid, referrer } = req.body;
 
   if (!accountId || !formData) {
     res.status(400).json({ error: 'accountId and formData are required' });
@@ -25,6 +26,11 @@ router.post('/form', asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // Look up default pipeline stage for auto-assignment
+  const defaultStage = await prisma.pipelineStage.findFirst({
+    where: { accountId, isDefault: true },
+  });
+
   const lead = await prisma.formLead.create({
     data: {
       accountId,
@@ -36,9 +42,11 @@ router.post('/form', asyncHandler(async (req: Request, res: Response) => {
       utmTerm,
       utmContent,
       gclid,
+      fbclid,
       referrer,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
+      pipelineStageId: defaultStage?.id || null,
     },
   });
 
@@ -141,11 +149,17 @@ router.post('/form/:id/tags', authMiddleware, asyncHandler(async (req: Request, 
     data: { label, color: color || '#6366f1', formLeadId: formLead.id },
   });
 
-  // Trigger Google Ads conversion upload for qualifying tags
+  // Trigger conversion uploads for qualifying tags
   const CONVERSION_TAGS = ['Qualified', 'Booked'];
-  if (CONVERSION_TAGS.includes(label) && formLead.gclid) {
-    uploadOfflineConversion(formLead.accountId, formLead.gclid, label, new Date())
-      .catch((err) => console.error('[GoogleAds] Conversion upload failed:', err));
+  if (CONVERSION_TAGS.includes(label)) {
+    if (formLead.gclid) {
+      uploadOfflineConversion(formLead.accountId, formLead.gclid, label, new Date())
+        .catch((err) => console.error('[GoogleAds] Conversion upload failed:', err));
+    }
+    if (formLead.fbclid) {
+      uploadFacebookConversion(formLead.accountId, formLead.fbclid, label, new Date())
+        .catch((err) => console.error('[FacebookAds] Conversion upload failed:', err));
+    }
   }
 
   res.status(201).json(tag);
@@ -189,11 +203,17 @@ router.post('/call/:id/tags', authMiddleware, asyncHandler(async (req: Request, 
     data: { label, color: color || '#6366f1', callLogId: callLog.id },
   });
 
-  // Trigger Google Ads conversion upload for qualifying tags
+  // Trigger conversion uploads for qualifying tags
   const CONVERSION_TAGS = ['Qualified', 'Booked'];
-  if (CONVERSION_TAGS.includes(label) && callLog.gclid) {
-    uploadOfflineConversion(callLog.accountId, callLog.gclid, label, new Date())
-      .catch((err) => console.error('[GoogleAds] Conversion upload failed:', err));
+  if (CONVERSION_TAGS.includes(label)) {
+    if (callLog.gclid) {
+      uploadOfflineConversion(callLog.accountId, callLog.gclid, label, new Date())
+        .catch((err) => console.error('[GoogleAds] Conversion upload failed:', err));
+    }
+    if (callLog.fbclid) {
+      uploadFacebookConversion(callLog.accountId, callLog.fbclid, label, new Date())
+        .catch((err) => console.error('[FacebookAds] Conversion upload failed:', err));
+    }
   }
 
   res.status(201).json(tag);

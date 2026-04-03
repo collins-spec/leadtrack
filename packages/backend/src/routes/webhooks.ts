@@ -1,11 +1,14 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { prisma } from '../config/prisma';
+import { env } from '../config/env';
 import { buildTwiML, buildWhisperTwiML } from '../services/twilio';
 import { CallStatus } from '@prisma/client';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { queueTranscription } from '../services/transcription';
 import { emitNotification } from '../services/notification';
 import { resolveGclidAttribution } from '../services/googleAds';
+import { fetchLeadData } from '../services/facebookAds';
 
 const router = Router();
 
@@ -71,6 +74,11 @@ router.post('/twilio/voice', asyncHandler(async (req: Request, res: Response) =>
     }
   }
 
+  // Look up default pipeline stage for auto-assignment
+  const defaultStage = await prisma.pipelineStage.findFirst({
+    where: { accountId: trackingNumber.accountId, isDefault: true },
+  });
+
   // Create call log with best available attribution
   const callLog = await prisma.callLog.create({
     data: {
@@ -82,6 +90,7 @@ router.post('/twilio/voice', asyncHandler(async (req: Request, res: Response) =>
       callStatus: 'RINGING',
       twilioCallSid: CallSid,
       gclid: dniSession?.gclid || fallbackGclid || null,
+      fbclid: dniSession?.fbclid || null,
       utmSource: dniSession?.utmSource || null,
       utmMedium: dniSession?.utmMedium || null,
       utmCampaign: dniSession?.utmCampaign || null,
@@ -89,6 +98,7 @@ router.post('/twilio/voice', asyncHandler(async (req: Request, res: Response) =>
       utmContent: dniSession?.utmContent || null,
       landingPage: dniSession?.landingPage || null,
       whisperPlayed: `Call from ${trackingNumber.source} ${trackingNumber.campaignTag || trackingNumber.medium}`,
+      pipelineStageId: defaultStage?.id || null,
     },
   });
 
@@ -207,6 +217,103 @@ router.post('/twilio/recording', asyncHandler(async (req: Request, res: Response
     }
   } catch (err) {
     console.error('Error updating recording:', err);
+  }
+
+  res.sendStatus(200);
+}));
+
+// ─── Facebook Lead Ads Webhook ──────────────────────────
+
+// GET /facebook/leadgen — Webhook verification
+router.get('/facebook/leadgen', (req: Request, res: Response) => {
+  const mode = req.query['hub.mode'] as string;
+  const token = req.query['hub.verify_token'] as string;
+  const challenge = req.query['hub.challenge'] as string;
+
+  if (mode === 'subscribe' && token === env.FACEBOOK_WEBHOOK_VERIFY_TOKEN) {
+    console.log('[FacebookAds] Webhook verified');
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+});
+
+// POST /facebook/leadgen — Receive leadgen events
+router.post('/facebook/leadgen', asyncHandler(async (req: Request, res: Response) => {
+  // Validate signature
+  const signature = req.headers['x-hub-signature-256'] as string;
+  if (signature && env.FACEBOOK_APP_SECRET) {
+    const expectedSig = 'sha256=' + crypto
+      .createHmac('sha256', env.FACEBOOK_APP_SECRET)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
+    if (signature !== expectedSig) {
+      console.error('[FacebookAds] Invalid webhook signature');
+      res.sendStatus(403);
+      return;
+    }
+  }
+
+  const body = req.body;
+
+  // Process each entry
+  for (const entry of (body.entry || [])) {
+    for (const change of (entry.changes || [])) {
+      if (change.field !== 'leadgen') continue;
+
+      const leadgenId = change.value?.leadgen_id;
+      const pageId = change.value?.page_id?.toString();
+
+      if (!leadgenId || !pageId) continue;
+
+      // Find the Facebook connection for this page
+      const connection = await prisma.facebookAdsConnection.findFirst({
+        where: { fbPageId: pageId, leadFormSyncEnabled: true, isActive: true },
+      });
+
+      if (!connection) {
+        console.log(`[FacebookAds] No active connection found for page ${pageId}`);
+        continue;
+      }
+
+      // Check for duplicate
+      const existing = await prisma.formLead.findFirst({
+        where: { externalId: `fb_${leadgenId}` },
+      });
+      if (existing) {
+        console.log(`[FacebookAds] Duplicate lead ${leadgenId}, skipping`);
+        continue;
+      }
+
+      try {
+        const leadData = await fetchLeadData(leadgenId, connection.accessToken);
+
+        // Look up default pipeline stage
+        const defaultStage = await prisma.pipelineStage.findFirst({
+          where: { accountId: connection.accountId, isDefault: true },
+        });
+
+        await prisma.formLead.create({
+          data: {
+            accountId: connection.accountId,
+            formData: leadData.formData,
+            utmSource: 'Facebook Lead Ad',
+            utmCampaign: leadData.campaignName,
+            externalId: `fb_${leadgenId}`,
+            pipelineStageId: defaultStage?.id || null,
+          },
+        });
+
+        // Notify
+        emitNotification(connection.accountId, 'NEW_FORM', {
+          formData: leadData.formData,
+        }).catch((err) => console.error('[Notification] NEW_FORM emit failed:', err));
+
+        console.log(`[FacebookAds] Created form lead from leadgen ${leadgenId} for account ${connection.accountId}`);
+      } catch (err) {
+        console.error(`[FacebookAds] Failed to process leadgen ${leadgenId}:`, err);
+      }
+    }
   }
 
   res.sendStatus(200);

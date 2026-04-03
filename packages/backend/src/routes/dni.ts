@@ -20,6 +20,7 @@ const sessionSchema = z.object({
   gclid: z.string().optional(),
   gbraid: z.string().optional(),
   wbraid: z.string().optional(),
+  fbclid: z.string().optional(),
   referrer: z.string().optional(),
   landingPage: z.string().optional(),
   userAgent: z.string().optional(),

@@ -15,11 +15,16 @@ import transcriptionRoutes from './routes/transcription';
 import keywordRoutes from './routes/keywords';
 import notificationRoutes from './routes/notifications';
 import googleAdsRoutes from './routes/googleAds';
+import facebookAdsRoutes from './routes/facebookAds';
+import adConnectionsRoutes from './routes/adConnections';
+import adminSyncRoutes from './routes/adminSync';
 import reportRoutes from './routes/reports';
 import userRoutes from './routes/users';
+import pipelineRoutes from './routes/pipeline';
 import { startSessionCleanup } from './services/dni';
 import { startDailyDigest } from './services/digest';
-import { startGoogleAdsSync } from './services/googleAds';
+import { startGoogleAdsSync, startGoogleLeadFormSync } from './services/googleAds';
+import { startFacebookAdsSync } from './services/facebookAds';
 import { startReportScheduler } from './services/reportScheduler';
 
 const app = express();
@@ -52,8 +57,12 @@ app.use('/api/transcription', dashboardCors, transcriptionRoutes);
 app.use('/api/accounts', dashboardCors, keywordRoutes);
 app.use('/api/notifications', dashboardCors, notificationRoutes);
 app.use('/api/google-ads', dashboardCors, googleAdsRoutes);
+app.use('/api/facebook-ads', dashboardCors, facebookAdsRoutes);
+app.use('/api/ad-connections', dashboardCors, adConnectionsRoutes);
+app.use('/api/admin', dashboardCors, adminSyncRoutes);
 app.use('/api/reports', dashboardCors, reportRoutes);
 app.use('/api/users', dashboardCors, userRoutes);
+app.use('/api/pipeline', dashboardCors, pipelineRoutes);
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -68,5 +77,7 @@ app.listen(env.PORT, () => {
   startSessionCleanup();
   startDailyDigest();
   startGoogleAdsSync();
+  startGoogleLeadFormSync();
+  startFacebookAdsSync();
   startReportScheduler();
 });

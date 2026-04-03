@@ -5,11 +5,13 @@ import { env } from '../config/env';
 import { authMiddleware } from '../middleware/auth';
 import { asyncHandler } from '../middleware/asyncHandler';
 import {
-  getGoogleOAuthUrl,
-  exchangeCodeForTokens,
+  getFacebookOAuthUrl,
+  exchangeCodeForToken,
+  getAdAccounts,
+  getPages,
+  subscribePageToLeadgen,
   syncSpendForConnection,
-  fetchConversionActions,
-} from '../services/googleAds';
+} from '../services/facebookAds';
 
 const router = Router();
 
@@ -24,7 +26,7 @@ async function verifyAccountAccess(accountId: string, organizationId: string) {
 
 // Helper: verify connection belongs to user's organization
 async function verifyConnectionAccess(connectionId: string, organizationId: string) {
-  const connection = await prisma.googleAdsConnection.findUnique({
+  const connection = await prisma.facebookAdsConnection.findUnique({
     where: { id: connectionId },
     include: { account: { select: { organizationId: true } } },
   });
@@ -34,7 +36,7 @@ async function verifyConnectionAccess(connectionId: string, organizationId: stri
 
 // ─── OAuth Flow ────────────────────────────────────────
 
-// GET /connect?accountId=xxx&name=xxx — returns OAuth consent URL
+// GET /connect?accountId=xxx&name=xxx — returns Facebook OAuth URL
 router.get('/connect', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const accountId = req.query.accountId as string;
   if (!accountId) { res.status(400).json({ error: 'accountId required' }); return; }
@@ -51,7 +53,7 @@ router.get('/connect', authMiddleware, asyncHandler(async (req: Request, res: Re
     connectionName,
   })).toString('base64url');
 
-  const url = getGoogleOAuthUrl(state);
+  const url = getFacebookOAuthUrl(state);
   res.json({ url });
 }));
 
@@ -67,25 +69,27 @@ router.get('/callback', asyncHandler(async (req: Request, res: Response) => {
     res.status(400).json({ error: 'Invalid state parameter' }); return;
   }
 
-  const { refreshToken, email } = await exchangeCodeForTokens(code);
+  const { accessToken, expiresIn, email } = await exchangeCodeForToken(code);
 
-  // Always create a new connection (supports multiple per account)
-  await prisma.googleAdsConnection.create({
+  const tokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
+
+  await prisma.facebookAdsConnection.create({
     data: {
       accountId: stateData.accountId,
       name: stateData.connectionName || null,
-      googleCustomerId: '',
-      refreshToken,
-      googleEmail: email || null,
+      fbAdAccountId: '', // User selects ad account after connecting
+      accessToken,
+      fbEmail: email || null,
+      tokenExpiresAt,
     },
   });
 
-  res.redirect(`${env.FRONTEND_URL}/dashboard/settings?googleAdsConnected=true`);
+  res.redirect(`${env.FRONTEND_URL}/dashboard/settings?facebookAdsConnected=true`);
 }));
 
 // ─── Connection Management ──────────────────────────────
 
-// GET /connections?accountId=xxx&page=1&limit=25&status=active|inactive|failing&search=xxx
+// GET /connections?accountId=xxx&page=1&limit=25&status=active|inactive|failing|expiring&search=xxx
 router.get('/connections', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const accountId = req.query.accountId as string;
   if (!accountId) { res.status(400).json({ error: 'accountId required' }); return; }
@@ -102,15 +106,20 @@ router.get('/connections', authMiddleware, asyncHandler(async (req: Request, res
   if (status === 'active') { where.isActive = true; where.consecutiveFailures = { lt: 5 }; }
   else if (status === 'inactive') { where.isActive = false; }
   else if (status === 'failing') { where.isActive = true; where.consecutiveFailures = { gte: 3 }; }
+  else if (status === 'expiring') {
+    const cutoff = new Date(); cutoff.setDate(cutoff.getDate() + 14);
+    where.isActive = true;
+    where.tokenExpiresAt = { lt: cutoff, gt: new Date() };
+  }
   if (search) {
     where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
-      { googleEmail: { contains: search, mode: 'insensitive' } },
+      { fbEmail: { contains: search, mode: 'insensitive' } },
     ];
   }
 
   const [connections, total] = await Promise.all([
-    prisma.googleAdsConnection.findMany({
+    prisma.facebookAdsConnection.findMany({
       where,
       include: {
         syncLogs: { take: 5, orderBy: { createdAt: 'desc' } },
@@ -120,7 +129,7 @@ router.get('/connections', authMiddleware, asyncHandler(async (req: Request, res
       skip: (page - 1) * limit,
       take: limit,
     }),
-    prisma.googleAdsConnection.count({ where }),
+    prisma.facebookAdsConnection.count({ where }),
   ]);
 
   const nextSyncAt = new Date();
@@ -131,13 +140,15 @@ router.get('/connections', authMiddleware, asyncHandler(async (req: Request, res
     connections: connections.map((c) => ({
       id: c.id,
       name: c.name,
-      googleEmail: c.googleEmail,
-      googleCustomerId: c.googleCustomerId,
+      fbEmail: c.fbEmail,
+      fbAdAccountId: c.fbAdAccountId,
+      fbPageId: c.fbPageId,
       isActive: c.isActive,
       leadFormSyncEnabled: c.leadFormSyncEnabled,
       lastSyncAt: c.lastSyncAt,
       lastSyncError: c.lastSyncError,
-      lastLeadFormSyncAt: c.lastLeadFormSyncAt,
+      tokenExpiresAt: c.tokenExpiresAt,
+      tokenRefreshedAt: c.tokenRefreshedAt,
       consecutiveFailures: c.consecutiveFailures,
       isThrottled: c.isThrottled,
       throttledUntil: c.throttledUntil,
@@ -149,6 +160,19 @@ router.get('/connections', authMiddleware, asyncHandler(async (req: Request, res
   });
 }));
 
+// GET /connections/expiring?accountId=xxx — connections with tokens expiring within 14 days
+router.get('/connections/expiring', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  const accountId = req.query.accountId as string;
+  if (!accountId) { res.status(400).json({ error: 'accountId required' }); return; }
+
+  const account = await verifyAccountAccess(accountId, req.user!.organizationId);
+  if (!account) { res.status(404).json({ error: 'Account not found' }); return; }
+
+  const { getExpiringTokenConnections } = await import('../services/facebookAds');
+  const expiring = await getExpiringTokenConnections(accountId);
+  res.json({ connections: expiring });
+}));
+
 // GET /connections/health?accountId=xxx — health summary
 router.get('/connections/health', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const accountId = req.query.accountId as string;
@@ -157,20 +181,23 @@ router.get('/connections/health', authMiddleware, asyncHandler(async (req: Reque
   const account = await verifyAccountAccess(accountId, req.user!.organizationId);
   if (!account) { res.status(404).json({ error: 'Account not found' }); return; }
 
-  const [total, active, failing, throttled] = await Promise.all([
-    prisma.googleAdsConnection.count({ where: { accountId } }),
-    prisma.googleAdsConnection.count({ where: { accountId, isActive: true, consecutiveFailures: { lt: 3 } } }),
-    prisma.googleAdsConnection.count({ where: { accountId, isActive: true, consecutiveFailures: { gte: 3 } } }),
-    prisma.googleAdsConnection.count({ where: { accountId, isThrottled: true } }),
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() + 14);
+
+  const [total, active, failing, throttled, expiring] = await Promise.all([
+    prisma.facebookAdsConnection.count({ where: { accountId } }),
+    prisma.facebookAdsConnection.count({ where: { accountId, isActive: true, consecutiveFailures: { lt: 3 } } }),
+    prisma.facebookAdsConnection.count({ where: { accountId, isActive: true, consecutiveFailures: { gte: 3 } } }),
+    prisma.facebookAdsConnection.count({ where: { accountId, isThrottled: true } }),
+    prisma.facebookAdsConnection.count({ where: { accountId, isActive: true, tokenExpiresAt: { lt: cutoff, gt: new Date() } } }),
   ]);
 
-  const lastSync = await prisma.googleAdsSyncLog.findFirst({
+  const lastSync = await prisma.facebookAdsSyncLog.findFirst({
     where: { connection: { accountId } },
     orderBy: { createdAt: 'desc' },
     select: { createdAt: true, status: true },
   });
 
-  res.json({ total, active, failing, throttled, inactive: total - active - failing, lastSync });
+  res.json({ total, active, failing, throttled, expiring, inactive: total - active - failing, lastSync });
 }));
 
 // POST /bulk-sync — trigger sync for all active connections under an account (queued)
@@ -182,13 +209,13 @@ router.post('/bulk-sync', authMiddleware, asyncHandler(async (req: Request, res:
   if (!account) { res.status(404).json({ error: 'Account not found' }); return; }
 
   const { enqueueSyncs } = await import('../services/syncRunner');
-  const connections = await prisma.googleAdsConnection.findMany({
-    where: { accountId, isActive: true, googleCustomerId: { not: '' } },
+  const connections = await prisma.facebookAdsConnection.findMany({
+    where: { accountId, isActive: true, fbAdAccountId: { not: '' } },
     select: { id: true },
   });
 
   const enqueued = await enqueueSyncs(
-    'google_ads', 'GOOGLE_ADS_SPEND',
+    'facebook_ads', 'FACEBOOK_ADS_SPEND',
     connections.map((c) => c.id),
     { priority: 1, dateRangeStart, dateRangeEnd },
   );
@@ -196,12 +223,37 @@ router.post('/bulk-sync', authMiddleware, asyncHandler(async (req: Request, res:
   res.json({ message: `Enqueued ${enqueued} syncs`, enqueued });
 }));
 
+// GET /ad-accounts?connectionId=xxx — list available ad accounts
+router.get('/ad-accounts', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  const connectionId = req.query.connectionId as string;
+  if (!connectionId) { res.status(400).json({ error: 'connectionId required' }); return; }
+
+  const connection = await verifyConnectionAccess(connectionId, req.user!.organizationId);
+  if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
+
+  const adAccounts = await getAdAccounts(connection.accessToken);
+  res.json({ adAccounts });
+}));
+
+// GET /pages?connectionId=xxx — list Facebook Pages for Lead Ads
+router.get('/pages', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  const connectionId = req.query.connectionId as string;
+  if (!connectionId) { res.status(400).json({ error: 'connectionId required' }); return; }
+
+  const connection = await verifyConnectionAccess(connectionId, req.user!.organizationId);
+  if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
+
+  const pages = await getPages(connection.accessToken);
+  res.json({ pages: pages.map((p) => ({ id: p.id, name: p.name })) });
+}));
+
 // PATCH /connection — update a specific connection
 const updateConnectionSchema = z.object({
   connectionId: z.string(),
   name: z.string().optional(),
-  googleCustomerId: z.string().optional(),
+  fbAdAccountId: z.string().optional(),
   isActive: z.boolean().optional(),
+  fbPageId: z.string().optional(),
   leadFormSyncEnabled: z.boolean().optional(),
 });
 
@@ -211,19 +263,33 @@ router.patch('/connection', authMiddleware, asyncHandler(async (req: Request, re
   const connection = await verifyConnectionAccess(body.connectionId, req.user!.organizationId);
   if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
 
-  const updated = await prisma.googleAdsConnection.update({
+  // If enabling lead form sync with a page, subscribe to leadgen webhooks
+  if (body.leadFormSyncEnabled && body.fbPageId && body.fbPageId !== connection.fbPageId) {
+    try {
+      const pages = await getPages(connection.accessToken);
+      const page = pages.find((p) => p.id === body.fbPageId);
+      if (page) {
+        await subscribePageToLeadgen(page.id, page.accessToken);
+      }
+    } catch (err) {
+      console.error('[FacebookAds] Failed to subscribe page to leadgen:', err);
+    }
+  }
+
+  const updated = await prisma.facebookAdsConnection.update({
     where: { id: body.connectionId },
     data: {
       ...(body.name !== undefined ? { name: body.name } : {}),
-      ...(body.googleCustomerId !== undefined ? { googleCustomerId: body.googleCustomerId } : {}),
+      ...(body.fbAdAccountId !== undefined ? { fbAdAccountId: body.fbAdAccountId } : {}),
       ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
+      ...(body.fbPageId !== undefined ? { fbPageId: body.fbPageId } : {}),
       ...(body.leadFormSyncEnabled !== undefined ? { leadFormSyncEnabled: body.leadFormSyncEnabled } : {}),
     },
   });
   res.json(updated);
 }));
 
-// DELETE /disconnect?connectionId=xxx — disconnect a specific connection
+// DELETE /disconnect?connectionId=xxx
 router.delete('/disconnect', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const connectionId = req.query.connectionId as string;
   if (!connectionId) { res.status(400).json({ error: 'connectionId required' }); return; }
@@ -231,11 +297,11 @@ router.delete('/disconnect', authMiddleware, asyncHandler(async (req: Request, r
   const connection = await verifyConnectionAccess(connectionId, req.user!.organizationId);
   if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
 
-  await prisma.googleAdsConnection.delete({ where: { id: connectionId } });
+  await prisma.facebookAdsConnection.delete({ where: { id: connectionId } });
   res.status(204).send();
 }));
 
-// POST /sync — manual trigger for a specific connection
+// POST /sync — manual spend sync trigger
 router.post('/sync', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const { connectionId } = req.body;
   if (!connectionId) { res.status(400).json({ error: 'connectionId required' }); return; }
@@ -244,25 +310,13 @@ router.post('/sync', authMiddleware, asyncHandler(async (req: Request, res: Resp
   if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
 
   syncSpendForConnection(connection.id).catch((err) =>
-    console.error('[GoogleAds] Manual sync error:', err),
+    console.error('[FacebookAds] Manual sync error:', err),
   );
 
   res.json({ message: 'Sync started' });
 }));
 
-// ─── Conversion Actions ─────────────────────────────────
-
-// GET /conversion-actions?connectionId=xxx
-router.get('/conversion-actions', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
-  const connectionId = req.query.connectionId as string;
-  if (!connectionId) { res.status(400).json({ error: 'connectionId required' }); return; }
-
-  const connection = await verifyConnectionAccess(connectionId, req.user!.organizationId);
-  if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
-
-  const conversionActions = await fetchConversionActions(connectionId);
-  res.json({ conversionActions });
-}));
+// ─── Conversion Mappings ────────────────────────────────
 
 // GET /conversion-mappings?connectionId=xxx
 router.get('/conversion-mappings', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
@@ -272,7 +326,7 @@ router.get('/conversion-mappings', authMiddleware, asyncHandler(async (req: Requ
   const connection = await verifyConnectionAccess(connectionId, req.user!.organizationId);
   if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
 
-  const mappings = await prisma.conversionActionMapping.findMany({
+  const mappings = await prisma.facebookConversionMapping.findMany({
     where: { connectionId },
     orderBy: { tagLabel: 'asc' },
   });
@@ -284,8 +338,7 @@ router.get('/conversion-mappings', authMiddleware, asyncHandler(async (req: Requ
 const conversionMappingSchema = z.object({
   connectionId: z.string(),
   tagLabel: z.string(),
-  conversionActionId: z.string(),
-  conversionActionName: z.string(),
+  pixelEventName: z.string(),
 });
 
 router.post('/conversion-mappings', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
@@ -294,7 +347,7 @@ router.post('/conversion-mappings', authMiddleware, asyncHandler(async (req: Req
   const connection = await verifyConnectionAccess(body.connectionId, req.user!.organizationId);
   if (!connection) { res.status(404).json({ error: 'Connection not found' }); return; }
 
-  const mapping = await prisma.conversionActionMapping.upsert({
+  const mapping = await prisma.facebookConversionMapping.upsert({
     where: {
       connectionId_tagLabel: {
         connectionId: body.connectionId,
@@ -302,15 +355,12 @@ router.post('/conversion-mappings', authMiddleware, asyncHandler(async (req: Req
       },
     },
     create: {
-      accountId: connection.accountId,
       connectionId: body.connectionId,
       tagLabel: body.tagLabel,
-      conversionActionId: body.conversionActionId,
-      conversionActionName: body.conversionActionName,
+      pixelEventName: body.pixelEventName,
     },
     update: {
-      conversionActionId: body.conversionActionId,
-      conversionActionName: body.conversionActionName,
+      pixelEventName: body.pixelEventName,
     },
   });
 
@@ -321,15 +371,13 @@ router.post('/conversion-mappings', authMiddleware, asyncHandler(async (req: Req
 router.delete('/conversion-mappings/:id', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const id = p(req.params.id);
 
-  const mapping = await prisma.conversionActionMapping.findUnique({ where: { id } });
+  const mapping = await prisma.facebookConversionMapping.findUnique({ where: { id } });
   if (!mapping) { res.status(404).json({ error: 'Mapping not found' }); return; }
 
-  const account = await prisma.account.findFirst({
-    where: { id: mapping.accountId, organizationId: req.user!.organizationId },
-  });
-  if (!account) { res.status(404).json({ error: 'Mapping not found' }); return; }
+  const connection = await verifyConnectionAccess(mapping.connectionId, req.user!.organizationId);
+  if (!connection) { res.status(404).json({ error: 'Mapping not found' }); return; }
 
-  await prisma.conversionActionMapping.delete({ where: { id } });
+  await prisma.facebookConversionMapping.delete({ where: { id } });
   res.status(204).send();
 }));
 

@@ -21,5 +21,8 @@ export const env = {
   GOOGLE_ADS_CLIENT_ID: process.env.GOOGLE_ADS_CLIENT_ID || '',
   GOOGLE_ADS_CLIENT_SECRET: process.env.GOOGLE_ADS_CLIENT_SECRET || '',
   GOOGLE_ADS_DEVELOPER_TOKEN: process.env.GOOGLE_ADS_DEVELOPER_TOKEN || '',
+  FACEBOOK_APP_ID: process.env.FACEBOOK_APP_ID || '',
+  FACEBOOK_APP_SECRET: process.env.FACEBOOK_APP_SECRET || '',
+  FACEBOOK_WEBHOOK_VERIFY_TOKEN: process.env.FACEBOOK_WEBHOOK_VERIFY_TOKEN || 'leadtrack-fb-verify',
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3000',
 };

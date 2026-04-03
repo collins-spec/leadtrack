@@ -46,7 +46,7 @@ const SNIPPET_TEMPLATE = `(function() {
         if (v) params[k.replace('utm_', '')] = v;
       });
       // Ads click IDs
-      ['gclid','gbraid','wbraid'].forEach(function(k) {
+      ['gclid','gbraid','wbraid','fbclid'].forEach(function(k) {
         var v = sp.get(k);
         if (v) params[k] = v;
       });
@@ -222,7 +222,8 @@ const SNIPPET_TEMPLATE = `(function() {
         utmCampaign: utm.campaign || null,
         utmTerm: utm.term || null,
         utmContent: utm.content || null,
-        gclid: utm.gclid || null
+        gclid: utm.gclid || null,
+        fbclid: utm.fbclid || null
       };
 
       sendData(API_BASE + '/leads/form', payload);
@@ -307,6 +308,7 @@ const SNIPPET_TEMPLATE = `(function() {
       gclid: utm.gclid || undefined,
       gbraid: utm.gbraid || undefined,
       wbraid: utm.wbraid || undefined,
+      fbclid: utm.fbclid || undefined,
       referrer: document.referrer || undefined,
       landingPage: window.location.href,
       ipAddress: undefined,

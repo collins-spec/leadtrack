@@ -469,34 +469,61 @@ class ApiClient {
     return this.request<{ ok: boolean }>('/notifications/read-all', { method: 'POST' });
   }
 
-  // Google Ads
-  async getGoogleAdsConnectUrl(accountId: string) {
-    return this.request<{ url: string }>(`/google-ads/connect?accountId=${accountId}`);
+  // Google Ads (multi-connection)
+  async getGoogleAdsConnectUrl(accountId: string, name?: string) {
+    const params = new URLSearchParams({ accountId });
+    if (name) params.set('name', name);
+    return this.request<{ url: string }>(`/google-ads/connect?${params}`);
   }
 
-  async getGoogleAdsStatus(accountId: string) {
+  async getGoogleAdsConnections(accountId: string, params?: URLSearchParams) {
+    const qs = params ? params.toString() : `accountId=${accountId}`;
     return this.request<{
-      connected: boolean;
-      isActive?: boolean;
-      googleEmail?: string;
-      googleCustomerId?: string;
-      lastSyncAt?: string;
-      lastSyncError?: string;
-      nextSyncAt?: string;
-      syncHistory?: Array<{
+      connections: Array<{
         id: string;
-        status: string;
-        error?: string;
-        recordsSynced: number;
-        createdAt: string;
+        name: string | null;
+        googleEmail: string | null;
+        googleCustomerId: string;
+        isActive: boolean;
+        leadFormSyncEnabled: boolean;
+        lastSyncAt: string | null;
+        lastSyncError: string | null;
+        lastLeadFormSyncAt: string | null;
+        consecutiveFailures: number;
+        isThrottled: boolean;
+        throttledUntil: string | null;
+        nextSyncAt: string;
+        syncHistory: Array<{
+          id: string;
+          status: string;
+          error?: string;
+          recordsSynced: number;
+          createdAt: string;
+        }>;
+        conversionMappings: Array<{
+          id: string;
+          tagLabel: string;
+          conversionActionId: string;
+          conversionActionName: string;
+        }>;
       }>;
-    }>(`/google-ads/status?accountId=${accountId}`);
+      pagination?: { page: number; limit: number; total: number; totalPages: number };
+    }>(`/google-ads/connections?${qs}`);
+  }
+
+  async bulkSyncGoogleAds(accountId: string, dateRangeStart?: string, dateRangeEnd?: string) {
+    return this.request<{ message: string; enqueued: number }>('/google-ads/bulk-sync', {
+      method: 'POST',
+      body: JSON.stringify({ accountId, dateRangeStart, dateRangeEnd }),
+    });
   }
 
   async updateGoogleAdsConnection(data: {
-    accountId: string;
+    connectionId: string;
+    name?: string;
     googleCustomerId?: string;
     isActive?: boolean;
+    leadFormSyncEnabled?: boolean;
   }) {
     return this.request<any>('/google-ads/connection', {
       method: 'PATCH',
@@ -504,26 +531,26 @@ class ApiClient {
     });
   }
 
-  async disconnectGoogleAds(accountId: string) {
-    return this.request<void>(`/google-ads/disconnect?accountId=${accountId}`, {
+  async disconnectGoogleAds(connectionId: string) {
+    return this.request<void>(`/google-ads/disconnect?connectionId=${connectionId}`, {
       method: 'DELETE',
     });
   }
 
-  async triggerGoogleAdsSync(accountId: string) {
+  async triggerGoogleAdsSync(connectionId: string) {
     return this.request<{ message: string }>('/google-ads/sync', {
       method: 'POST',
-      body: JSON.stringify({ accountId }),
+      body: JSON.stringify({ connectionId }),
     });
   }
 
-  async getConversionActions(accountId: string) {
+  async getConversionActions(connectionId: string) {
     return this.request<{
       conversionActions: Array<{ id: string; name: string; type: string }>;
-    }>(`/google-ads/conversion-actions?accountId=${accountId}`);
+    }>(`/google-ads/conversion-actions?connectionId=${connectionId}`);
   }
 
-  async getConversionMappings(accountId: string) {
+  async getConversionMappings(connectionId: string) {
     return this.request<{
       mappings: Array<{
         id: string;
@@ -532,11 +559,11 @@ class ApiClient {
         conversionActionName: string;
         isActive: boolean;
       }>;
-    }>(`/google-ads/conversion-mappings?accountId=${accountId}`);
+    }>(`/google-ads/conversion-mappings?connectionId=${connectionId}`);
   }
 
   async createConversionMapping(data: {
-    accountId: string;
+    connectionId: string;
     tagLabel: string;
     conversionActionId: string;
     conversionActionName: string;
@@ -551,6 +578,193 @@ class ApiClient {
     return this.request<void>(`/google-ads/conversion-mappings/${id}`, {
       method: 'DELETE',
     });
+  }
+
+  // Facebook Ads (multi-connection)
+  async getFacebookAdsConnectUrl(accountId: string, name?: string) {
+    const params = new URLSearchParams({ accountId });
+    if (name) params.set('name', name);
+    return this.request<{ url: string }>(`/facebook-ads/connect?${params}`);
+  }
+
+  async getFacebookAdsConnections(accountId: string, params?: URLSearchParams) {
+    const qs = params ? params.toString() : `accountId=${accountId}`;
+    return this.request<{
+      connections: Array<{
+        id: string;
+        name: string | null;
+        fbEmail: string | null;
+        fbAdAccountId: string;
+        isActive: boolean;
+        lastSyncAt: string | null;
+        lastSyncError: string | null;
+        nextSyncAt: string;
+        tokenExpiresAt: string | null;
+        tokenRefreshedAt: string | null;
+        consecutiveFailures: number;
+        isThrottled: boolean;
+        throttledUntil: string | null;
+        syncHistory: Array<{
+          id: string;
+          status: string;
+          error?: string;
+          recordsSynced: number;
+          createdAt: string;
+        }>;
+        conversionMappings: Array<{
+          id: string;
+          tagLabel: string;
+          pixelEventName: string;
+        }>;
+      }>;
+      pagination?: { page: number; limit: number; total: number; totalPages: number };
+    }>(`/facebook-ads/connections?${qs}`);
+  }
+
+  async bulkSyncFacebookAds(accountId: string, dateRangeStart?: string, dateRangeEnd?: string) {
+    return this.request<{ message: string; enqueued: number }>('/facebook-ads/bulk-sync', {
+      method: 'POST',
+      body: JSON.stringify({ accountId, dateRangeStart, dateRangeEnd }),
+    });
+  }
+
+  async getAdConnectionsSummary(accountId: string) {
+    return this.request<any>(`/ad-connections/summary?accountId=${accountId}`);
+  }
+
+  async getFacebookAdAccounts(connectionId: string) {
+    return this.request<{
+      adAccounts: Array<{ id: string; name: string; accountStatus: number }>;
+    }>(`/facebook-ads/ad-accounts?connectionId=${connectionId}`);
+  }
+
+  async updateFacebookAdsConnection(data: {
+    connectionId: string;
+    name?: string;
+    fbAdAccountId?: string;
+    isActive?: boolean;
+    fbPageId?: string;
+    leadFormSyncEnabled?: boolean;
+  }) {
+    return this.request<any>('/facebook-ads/connection', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async disconnectFacebookAds(connectionId: string) {
+    return this.request<void>(`/facebook-ads/disconnect?connectionId=${connectionId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async triggerFacebookAdsSync(connectionId: string) {
+    return this.request<{ message: string }>('/facebook-ads/sync', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId }),
+    });
+  }
+
+  async getFacebookConversionMappings(connectionId: string) {
+    return this.request<{
+      mappings: Array<{
+        id: string;
+        tagLabel: string;
+        pixelEventName: string;
+        isActive: boolean;
+      }>;
+    }>(`/facebook-ads/conversion-mappings?connectionId=${connectionId}`);
+  }
+
+  async createFacebookConversionMapping(data: {
+    connectionId: string;
+    tagLabel: string;
+    pixelEventName: string;
+  }) {
+    return this.request<any>('/facebook-ads/conversion-mappings', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteFacebookConversionMapping(id: string) {
+    return this.request<void>(`/facebook-ads/conversion-mappings/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Facebook Lead Ads — Pages
+  async getFacebookPages(connectionId: string) {
+    return this.request<{ pages: Array<{ id: string; name: string }> }>(
+      `/facebook-ads/pages?connectionId=${connectionId}`,
+    );
+  }
+
+  // Pipeline
+  async getPipelineStages(accountId: string) {
+    return this.request<{
+      stages: Array<{
+        id: string;
+        name: string;
+        position: number;
+        color: string;
+        isDefault: boolean;
+        isWon: boolean;
+        isLost: boolean;
+        leadCount: number;
+      }>;
+    }>(`/pipeline/stages?accountId=${accountId}`);
+  }
+
+  async seedDefaultStages(accountId: string) {
+    return this.request<any>('/pipeline/stages/seed', {
+      method: 'POST',
+      body: JSON.stringify({ accountId }),
+    });
+  }
+
+  async createPipelineStage(data: { accountId: string; name: string; color?: string; position: number }) {
+    return this.request<any>('/pipeline/stages', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updatePipelineStage(stageId: string, data: { name?: string; color?: string; isDefault?: boolean; isWon?: boolean; isLost?: boolean }) {
+    return this.request<any>(`/pipeline/stages/${stageId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deletePipelineStage(stageId: string) {
+    return this.request<void>(`/pipeline/stages/${stageId}`, { method: 'DELETE' });
+  }
+
+  async reorderPipelineStages(accountId: string, stageIds: string[]) {
+    return this.request<any>('/pipeline/stages/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ accountId, stageIds }),
+    });
+  }
+
+  async getPipelineLeads(accountId: string, filters?: { type?: string; source?: string; search?: string }) {
+    const params = new URLSearchParams({ accountId });
+    if (filters?.type) params.set('type', filters.type);
+    if (filters?.source) params.set('source', filters.source);
+    if (filters?.search) params.set('search', filters.search);
+    return this.request<{ pipeline: Array<{ stage: any; leads: any[] }> }>(`/pipeline/leads?${params}`);
+  }
+
+  async moveLead(leadType: 'call' | 'form', leadId: string, stageId: string) {
+    return this.request<{ success: boolean; fromStageId: string | null; toStageId: string }>(
+      `/pipeline/leads/${leadType}/${leadId}/stage`,
+      { method: 'PATCH', body: JSON.stringify({ stageId }) },
+    );
+  }
+
+  async getLeadStageHistory(leadType: 'call' | 'form', leadId: string) {
+    return this.request<{ history: any[] }>(`/pipeline/history/${leadType}/${leadId}`);
   }
 
   // Reports & Exports

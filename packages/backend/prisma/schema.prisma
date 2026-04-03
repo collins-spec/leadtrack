@@ -117,9 +117,11 @@ model Account {
   notificationConfigs      NotificationConfig[]
   inAppNotifications       Notification[]
   keywordConfigs           KeywordConfig[]
-  googleAdsConnection      GoogleAdsConnection?
+  googleAdsConnections     GoogleAdsConnection[]
   conversionActionMappings ConversionActionMapping[]
+  facebookAdsConnections   FacebookAdsConnection[]
   scheduledReports         ScheduledReport[]
+  pipelineStages           PipelineStage[]
 
   @@index([organizationId])
 }
@@ -163,6 +165,7 @@ model CallLog {
   callStatus       CallStatus @default(RINGING)
   twilioCallSid    String?    @unique
   gclid            String?    // Google Click ID from DNI
+  fbclid           String?    // Facebook Click ID from DNI
   utmSource        String?    // e.g. "google"
   utmMedium        String?    // e.g. "cpc"
   utmCampaign      String?    // e.g. "Brand Campaign Q1"
@@ -193,15 +196,20 @@ model CallLog {
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
-  account        Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  trackingNumber TrackingNumber @relation(fields: [trackingNumberId], references: [id], onDelete: Cascade)
+  pipelineStageId String?
+
+  account        Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  trackingNumber TrackingNumber  @relation(fields: [trackingNumberId], references: [id], onDelete: Cascade)
   tags           LeadTag[]
+  pipelineStage  PipelineStage?  @relation(fields: [pipelineStageId], references: [id])
+  stageChanges   PipelineStageChange[]
 
   @@index([accountId])
   @@index([trackingNumberId])
   @@index([createdAt])
   @@index([twilioCallSid])
   @@index([googleAdsKeyword])
+  @@index([pipelineStageId])
 }
 
 // ─── Form Lead ──────────────────────────────────────────
@@ -217,16 +225,23 @@ model FormLead {
   utmTerm     String?
   utmContent  String?
   gclid       String?
+  fbclid      String?
   referrer    String?
   ipAddress   String?
   userAgent   String?
+  externalId  String?  // For dedup: Facebook leadgen_id or Google resource_name
+  pipelineStageId String?
   createdAt   DateTime @default(now())
 
-  account Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  tags    LeadTag[]
+  account       Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tags          LeadTag[]
+  pipelineStage PipelineStage?  @relation(fields: [pipelineStageId], references: [id])
+  stageChanges  PipelineStageChange[]
 
   @@index([accountId])
   @@index([createdAt])
+  @@index([externalId])
+  @@index([pipelineStageId])
 }
 
 // ─── Lead Tag ───────────────────────────────────────────
@@ -261,6 +276,7 @@ model DNISession {
   gclid            String?
   gbraid           String?
   wbraid           String?
+  fbclid           String?
   referrer         String?
   landingPage      String?
   ipAddress        String?
@@ -362,18 +378,33 @@ model KeywordConfig {
 
 model GoogleAdsConnection {
   id               String    @id @default(cuid())
-  accountId        String    @unique
+  accountId        String
+  name             String?   // User-friendly label (e.g. "Brand Account")
   googleCustomerId String
   refreshToken     String
   googleEmail      String?
   isActive         Boolean   @default(true)
-  lastSyncAt       DateTime?
-  lastSyncError    String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  lastSyncAt            DateTime?
+  lastSyncError         String?
+  leadFormSyncEnabled   Boolean   @default(false)
+  lastLeadFormSyncAt    DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  account  Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  syncLogs GoogleAdsSyncLog[]
+  // ── Health tracking (scaling) ──
+  consecutiveFailures  Int       @default(0)
+  lastHealthCheck      DateTime?
+  isThrottled          Boolean   @default(false)
+  throttledUntil       DateTime?
+
+  account              Account                  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  syncLogs             GoogleAdsSyncLog[]
+  conversionMappings   ConversionActionMapping[]
+  syncQueue            SyncQueue[]
+
+  @@index([accountId])
+  @@index([accountId, isActive])
+  @@index([isActive, isThrottled])
 }
 
 // ─── Google Ads Sync Log ─────────────────────────────────
@@ -384,11 +415,13 @@ model GoogleAdsSyncLog {
   status        String   // SUCCESS, ERROR
   error         String?
   recordsSynced Int      @default(0)
+  durationMs    Int?     // Sync duration for monitoring
   createdAt     DateTime @default(now())
 
   connection GoogleAdsConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   @@index([connectionId])
+  @@index([createdAt])
 }
 
 // ─── Conversion Action Mapping ───────────────────────────
@@ -396,16 +429,19 @@ model GoogleAdsSyncLog {
 model ConversionActionMapping {
   id                   String   @id @default(cuid())
   accountId            String
+  connectionId         String
   tagLabel             String   // "Qualified", "Booked", etc.
   conversionActionId   String   // "customers/123/conversionActions/456"
   conversionActionName String
   isActive             Boolean  @default(true)
   createdAt            DateTime @default(now())
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account    Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  connection GoogleAdsConnection  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
-  @@unique([accountId, tagLabel])
+  @@unique([connectionId, tagLabel])
   @@index([accountId])
+  @@index([connectionId])
 }
 
 // ─── Scheduled Report ────────────────────────────────────
@@ -430,6 +466,121 @@ model ScheduledReport {
   @@index([accountId])
 }
 
+// ─── Facebook Ads Connection ─────────────────────────────
+
+model FacebookAdsConnection {
+  id              String    @id @default(cuid())
+  accountId       String
+  name            String?   // User-friendly label
+  fbAdAccountId   String    // "act_123456789"
+  accessToken     String    // Long-lived user token
+  fbEmail         String?
+  isActive             Boolean   @default(true)
+  lastSyncAt           DateTime?
+  lastSyncError        String?
+  tokenExpiresAt       DateTime? // FB tokens expire (~60 days)
+  tokenRefreshedAt     DateTime? // When token was last exchanged/refreshed
+  fbPageId             String?   // Facebook Page ID for Lead Ads webhook
+  leadFormSyncEnabled  Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  // ── Health tracking (scaling) ──
+  consecutiveFailures  Int       @default(0)
+  lastHealthCheck      DateTime?
+  isThrottled          Boolean   @default(false)
+  throttledUntil       DateTime?
+
+  account             Account                    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  syncLogs            FacebookAdsSyncLog[]
+  conversionMappings  FacebookConversionMapping[]
+  syncQueue           SyncQueue[]
+
+  @@index([accountId])
+  @@index([accountId, isActive])
+  @@index([isActive, isThrottled])
+  @@index([tokenExpiresAt])
+}
+
+// ─── Facebook Ads Sync Log ───────────────────────────────
+
+model FacebookAdsSyncLog {
+  id            String   @id @default(cuid())
+  connectionId  String
+  status        String   // SUCCESS, ERROR
+  error         String?
+  recordsSynced Int      @default(0)
+  durationMs    Int?     // Sync duration for monitoring
+  createdAt     DateTime @default(now())
+
+  connection FacebookAdsConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@index([connectionId])
+  @@index([createdAt])
+}
+
+// ─── Facebook Conversion Mapping ─────────────────────────
+
+model FacebookConversionMapping {
+  id             String   @id @default(cuid())
+  connectionId   String
+  tagLabel       String   // "Qualified", "Booked", etc.
+  pixelEventName String   // "Lead", "Purchase", etc.
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  connection FacebookAdsConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, tagLabel])
+  @@index([connectionId])
+}
+
+// ─── Sync Queue (DB-backed job queue for ad syncs) ──────
+
+enum SyncStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum SyncType {
+  GOOGLE_ADS_SPEND
+  GOOGLE_ADS_LEAD_FORMS
+  FACEBOOK_ADS_SPEND
+}
+
+model SyncQueue {
+  id                    String    @id @default(cuid())
+  platform              String    // "google_ads" | "facebook_ads"
+  syncType              SyncType
+  googleAdsConnectionId String?
+  facebookAdsConnectionId String?
+  accountId             String
+  status                SyncStatus @default(PENDING)
+  priority              Int        @default(0)   // Higher = sooner. 1 = manual trigger
+  scheduledFor          DateTime   @default(now())
+  startedAt             DateTime?
+  completedAt           DateTime?
+  error                 String?
+  recordsSynced         Int        @default(0)
+  durationMs            Int?
+  attempt               Int        @default(0)
+  maxAttempts           Int        @default(3)
+  dateRangeStart        String?    // YYYY-MM-DD for backfill
+  dateRangeEnd          String?    // YYYY-MM-DD for backfill
+  createdAt             DateTime   @default(now())
+
+  googleAdsConnection   GoogleAdsConnection?   @relation(fields: [googleAdsConnectionId], references: [id], onDelete: Cascade)
+  facebookAdsConnection FacebookAdsConnection? @relation(fields: [facebookAdsConnectionId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledFor])
+  @@index([accountId])
+  @@index([googleAdsConnectionId])
+  @@index([facebookAdsConnectionId])
+  @@index([platform, status])
+}
+
 // ─── Invite ──────────────────────────────────────────────
 
 model Invite {
@@ -447,4 +598,49 @@ model Invite {
 
   @@index([token])
   @@index([organizationId])
+}
+
+// ─── Pipeline Stage ─────────────────────────────────────
+
+model PipelineStage {
+  id        String   @id @default(cuid())
+  accountId String
+  name      String   // "New", "Contacted", "Qualified", "Booked", "Won", "Lost"
+  position  Int      // Ordering (0, 1, 2, 3...)
+  color     String   @default("#6366f1")
+  isDefault Boolean  @default(false) // New leads go here
+  isWon     Boolean  @default(false)
+  isLost    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account          Account               @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  callLogs         CallLog[]
+  formLeads        FormLead[]
+  stageChangesFrom PipelineStageChange[] @relation("FromStage")
+  stageChangesTo   PipelineStageChange[] @relation("ToStage")
+
+  @@index([accountId])
+  @@unique([accountId, position])
+}
+
+// ─── Pipeline Stage Change (Audit Log) ──────────────────
+
+model PipelineStageChange {
+  id          String   @id @default(cuid())
+  leadType    LeadType
+  callLogId   String?
+  formLeadId  String?
+  fromStageId String?
+  toStageId   String
+  changedById String?  // userId who moved it (null = system)
+  createdAt   DateTime @default(now())
+
+  callLog   CallLog?       @relation(fields: [callLogId], references: [id], onDelete: Cascade)
+  formLead  FormLead?      @relation(fields: [formLeadId], references: [id], onDelete: Cascade)
+  fromStage PipelineStage? @relation("FromStage", fields: [fromStageId], references: [id])
+  toStage   PipelineStage  @relation("ToStage", fields: [toStageId], references: [id])
+
+  @@index([callLogId])
+  @@index([formLeadId])
 }
