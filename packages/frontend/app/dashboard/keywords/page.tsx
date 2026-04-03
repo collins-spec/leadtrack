@@ -416,9 +416,9 @@ export default function KeywordsPage() {
                       <div className="flex items-center gap-1">
                         <div
                           className={`text-sm font-bold tabular-nums ${
-                            kw.avg_score >= 7
+                            (kw.avg_score ?? 0) >= 7
                               ? 'text-green-600'
-                              : kw.avg_score >= 4
+                              : (kw.avg_score ?? 0) >= 4
                               ? 'text-yellow-600'
                               : 'text-red-600'
                           }`}
