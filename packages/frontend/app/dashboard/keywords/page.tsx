@@ -12,16 +12,16 @@ interface KeywordData {
   keyword: string;
   match_type: string | null;
   campaign: string | null;
-  utm_source: string | null;
-  utm_medium: string | null;
-  utm_campaign: string | null;
+  utm_source?: string | null;
+  utm_medium?: string | null;
+  utm_campaign?: string | null;
   calls: number;
   qualified: number;
   avg_duration: number;
   conv_rate: number;
-  avg_score: number;
-  total_quoted: number;
-  total_sales: number;
+  avg_score?: number;
+  total_quoted?: number;
+  total_sales?: number;
 }
 
 type SortField = 'keyword' | 'calls' | 'qualified' | 'conv_rate' | 'avg_duration' | 'avg_score' | 'total_quoted' | 'total_sales';
